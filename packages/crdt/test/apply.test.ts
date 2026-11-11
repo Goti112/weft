@@ -40,3 +40,18 @@ test('character-by-character inserts do not interleave', () => {
  for (let i=0;i<5;i++) ob.push(...b.insert(1+i,'adios'[i]));
  sync(a,b,oa); sync(b,a,ob); expect(a.text()).toBe(b.text()); expect(['[holaadios]','[adioshola]']).toContain(a.text());
 });
+
+test('delete never leaves half of a surrogate pair', () => {
+  const d = new FugueDoc('a'); d.insert(0, 'a😀b');
+  d.delete(1, 1); expect(d.text()).toBe('ab');
+});
+
+test('insert cannot split a surrogate pair', () => {
+  const d = new FugueDoc('a'); d.insert(0, '😀');
+  expect(() => d.insert(1, 'x')).toThrow(RangeError);
+});
+
+test('chunk boundary does not split a surrogate pair', () => {
+  const d = new FugueDoc('a'); const ops = d.insert(0, 'x'.repeat(999) + '😀');
+  expect(ops.filter(o => o.type === 'insert').map(o => o.text.length)).toEqual([999, 2]);
+});

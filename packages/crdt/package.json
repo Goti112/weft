@@ -1,1 +1,1 @@
-{"name":"@weft/crdt","version":"0.1.0","type":"module","exports":"./src/index.ts","scripts":{"test":"vitest run","lint":"tsc --noEmit","build":"tsc"}}
+{"name":"@weft/crdt","version":"0.1.0","type":"module","exports":"./src/index.ts","scripts":{"test":"vitest run","lint":"tsc --noEmit","build":"tsc"},"devDependencies":{"fast-check":"^4.10.2"}}

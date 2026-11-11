@@ -32,7 +32,8 @@ export class FugueDoc {
   private visible(): Node[] { return this.order.filter(n => !n.deleted); }
 
   private checkRange(index: number, length = 0): void {
-    const size = this.visible().length;
+    let size = 0;
+    for (const node of this.order) if (!node.deleted) size++;
     if (!Number.isInteger(index) || !Number.isInteger(length) || index < 0 || length < 0 || index + length > size) {
       throw new RangeError('Invalid visible range');
     }
@@ -40,10 +41,13 @@ export class FugueDoc {
 
   insert(index: number, text: string): Op[] {
     this.checkRange(index);
+    if (this.insideSurrogatePair(index)) throw new RangeError('Insert splits a surrogate pair');
     const ops: Op[] = [];
-    for (let offset = 0; offset < text.length; offset += MAX_CHUNK) {
-      const chunk = text.slice(offset, offset + MAX_CHUNK);
-      const left = index === 0 ? this.root : this.visible()[index - 1];
+    for (let offset = 0; offset < text.length;) {
+      let end = Math.min(text.length, offset + MAX_CHUNK);
+      if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1]) && /[\uDC00-\uDFFF]/.test(text[end])) end--;
+      const chunk = text.slice(offset, end);
+      const left = index === 0 ? this.root : this.visibleAt(index - 1)!;
       const next = this.order[this.order.indexOf(left) + 1];
       const parent = left.rightChildren.length === 0 ? left : next;
       const side = left.rightChildren.length === 0 ? 'R' : 'L';
@@ -53,6 +57,7 @@ export class FugueDoc {
       this.applied.add(idKey(op.opId));
       ops.push(op);
       index += chunk.length;
+      offset = end;
     }
     return ops;
   }
@@ -60,6 +65,10 @@ export class FugueDoc {
   delete(index: number, length: number): Op[] {
     this.checkRange(index, length);
     if (!length) return [];
+    let end = index + length;
+    if (this.insideSurrogatePair(index)) index--;
+    if (this.insideSurrogatePair(end)) end++;
+    length = end - index;
     const targets = this.visible().slice(index, index + length);
     const op: Op = { type: 'delete', opId: { replica: this.replicaId, counter: this.counter++ }, targets: targets.map(n => n.id!) };
     for (const node of targets) node.deleted = true;
@@ -71,6 +80,22 @@ export class FugueDoc {
   private observe(id: Id): void {
     this.versions[id.replica] = Math.max(this.versions[id.replica] ?? -1, id.counter);
     if (id.replica === this.replicaId) this.counter = Math.max(this.counter, id.counter + 1);
+  }
+
+  private insideSurrogatePair(index: number): boolean {
+    if (index <= 0) return false;
+    const left = this.visibleAt(index - 1);
+    if (!left || !/[\uD800-\uDBFF]/.test(left.char)) return false;
+    const right = this.visibleAt(index);
+    return !!right && /[\uDC00-\uDFFF]/.test(right.char);
+  }
+
+  private visibleAt(index: number): Node | undefined {
+    let i = 0;
+    for (const node of this.order) {
+      if (!node.deleted && i++ === index) return node;
+    }
+    return undefined;
   }
 
   private insertChunk(op: Extract<Op, { type: 'insert' }>): void {
