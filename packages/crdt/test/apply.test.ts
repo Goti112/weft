@@ -55,3 +55,12 @@ test('chunk boundary does not split a surrogate pair', () => {
   const d = new FugueDoc('a'); const ops = d.insert(0, 'x'.repeat(999) + '😀');
   expect(ops.filter(o => o.type === 'insert').map(o => o.text.length)).toEqual([999, 2]);
 });
+
+test('large deletes split into operations within the wire budget', () => {
+  const d = new FugueDoc('a'); d.insert(0, 'x'.repeat(5000));
+  const ops = d.delete(0, 5000);
+  expect(ops.length).toBeGreaterThan(1);
+  expect(ops.every(op => new TextEncoder().encode(JSON.stringify(op)).length < 60000)).toBe(true);
+  expect(new Set(ops.map(op => op.opId.counter)).size).toBe(ops.length);
+  expect(d.text()).toBe('');
+});

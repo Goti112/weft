@@ -70,11 +70,24 @@ export class FugueDoc {
     if (this.insideSurrogatePair(end)) end++;
     length = end - index;
     const targets = this.visible().slice(index, index + length);
-    const op: Op = { type: 'delete', opId: { replica: this.replicaId, counter: this.counter++ }, targets: targets.map(n => n.id!) };
-    for (const node of targets) node.deleted = true;
-    this.observe(op.opId);
-    this.applied.add(idKey(op.opId));
-    return [op];
+    const ops: Op[] = [];
+    let ids: Id[] = [];
+    let bytes = 0;
+    const flush = () => {
+      if (!ids.length) return;
+      const op: Op = { type: 'delete', opId: { replica: this.replicaId, counter: this.counter++ }, targets: ids };
+      this.observe(op.opId); this.applied.add(idKey(op.opId)); ops.push(op);
+      ids = []; bytes = 0;
+    };
+    for (let i = 0; i < targets.length; i++) {
+      const node = targets[i];
+      const size = new TextEncoder().encode(JSON.stringify(node.id)).length + 1;
+      const completesPair = i > 0 && /[\uD800-\uDBFF]/.test(targets[i - 1].char) && /[\uDC00-\uDFFF]/.test(node.char);
+      if (!completesPair && (ids.length >= 500 || bytes + size > 58000)) flush();
+      ids.push(node.id!); bytes += size; node.deleted = true;
+    }
+    flush();
+    return ops;
   }
 
   private observe(id: Id): void {
