@@ -42,3 +42,11 @@ test('replacing a selection = delete + insert', async () => {
   view.dispatch({ changes: { from: 6, to: 11, insert: 'Weft' } });
   expect(replica.doc.text()).toBe('hello Weft'); expect(replica.pendingCount).toBe(3);
 });
+
+test('programmatic local edits update editor without echo', async () => {
+  const { replica, view } = await make();
+  replica.insert(0, 'escenario');
+  await Promise.resolve();
+  expect(view.state.doc.toString()).toBe('escenario');
+  expect(replica.pendingCount).toBe(1);
+});
