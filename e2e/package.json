@@ -1,0 +1,2 @@
+{"name":"e2e","private":true,"type":"module","scripts":{"test:e2e":"playwright test","lint":"tsc --noEmit","build":"tsc --noEmit"},"devDependencies":{"@playwright/test":"^1.56.1","@types/node":"^24.0.0","typescript":"~5.9.3"}}
+

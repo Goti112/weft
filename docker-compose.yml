@@ -1,0 +1,28 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: weft
+      POSTGRES_USER: weft
+      POSTGRES_PASSWORD: weft
+    volumes:
+      - weft-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U weft -d weft]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  app:
+    build: .
+    ports:
+      - "127.0.0.1:${WEFT_PORT:-8080}:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/weft
+      SPRING_DATASOURCE_USERNAME: weft
+      SPRING_DATASOURCE_PASSWORD: weft
+      WEFT_ALLOWED_ORIGINS: ${WEFT_ALLOWED_ORIGINS:-http://localhost:8080,http://localhost:18081}
+    depends_on:
+      postgres:
+        condition: service_healthy
+volumes:
+  weft-data:

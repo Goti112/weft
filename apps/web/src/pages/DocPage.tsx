@@ -10,7 +10,13 @@ export function DocPage() {
   const { id } = useParams(); const navigate = useNavigate();
   const [replica, setReplica] = useState<Replica>();
   const [persistent, setPersistent] = useState(true);
+  const [offlineReady, setOfflineReady] = useState(false);
   const [error, setError] = useState(''); const [, render] = useState(0);
+  useEffect(() => {
+    let active = true;
+    if ('serviceWorker' in navigator) void navigator.serviceWorker.ready.then(() => { if (active) setOfflineReady(true); });
+    return () => { active = false; };
+  }, []);
   useEffect(() => {
     let active = true; let current: Replica | undefined; let unsubscribers: (() => void)[] = [];
     setReplica(undefined); setError('');
@@ -34,6 +40,7 @@ export function DocPage() {
     <div className="document-heading"><div><p className="eyebrow">ESPACIO COMPARTIDO</p><h1>Escribe. Lo demás se une.</h1><p>Comparte esta dirección y escribe desde otro navegador.</p></div>{replica && <Status replica={replica} />}</div>
     {error && <p className="warning" role="alert">{error}</p>}
     {!persistent && <p className="warning" role="alert">Este navegador no permite guardar en local: si recargas sin conexión perderás los cambios.</p>}
+    {persistent && offlineReady && <p className="local-ready">✓ Listo para trabajar sin conexión</p>}
     {replica ? <section className="document-editor"><div className="editor-bar"><span>Documento / {id}</span><span>{replica.pendingCount} ops pendientes</span></div><Editor replica={replica} /></section> : !error && <p role="status">Abriendo documento…</p>}
     <footer>Texto plano. Sin cuentas. Cada cambio cuenta.</footer>
   </main>;

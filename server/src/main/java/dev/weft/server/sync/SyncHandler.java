@@ -160,16 +160,25 @@ public class SyncHandler extends TextWebSocketHandler {
         }
         registry.withSessions(doc, sessions -> {
             var stored = ops.append(doc, incoming);
-            send(sender(session), new Messages.Ack("ack", ids));
-            if (stored.isEmpty()) return;
+            IOException ackFailure = null;
+            try { send(sender(session), new Messages.Ack("ack", ids)); }
+            catch (IOException e) { ackFailure = e; }
+            if (stored.isEmpty()) {
+                if (ackFailure != null) throw ackFailure;
+                return;
+            }
             for (var page : split(wire(stored))) {
                 var broadcast = new Messages.Ops("ops", page);
                 for (var other : sessions) {
                     if (other.getId().equals(session.getId()) || !other.isOpen()) continue;
                     try { send(other, broadcast); }
-                    catch (IOException e) { other.close(CloseStatus.SERVER_ERROR); }
+                    catch (IOException e) {
+                        try { other.close(CloseStatus.SERVER_ERROR); }
+                        catch (IOException ignored) { /* Continue delivering to healthy sessions. */ }
+                    }
                 }
             }
+            if (ackFailure != null) throw ackFailure;
         });
     }
 
