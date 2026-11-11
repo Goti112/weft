@@ -1,5 +1,6 @@
 import { compareIds, idKey, type Id } from './id';
 import type { Op } from './ops';
+import type { TreeSnapshot, TextChange } from './inspect';
 
 export const MAX_CHUNK = 1000;
 
@@ -22,6 +23,9 @@ export class FugueDoc {
   private readonly order: Node[] = [];
   private readonly versions: Record<string, number> = Object.create(null);
   private counter = 0;
+  private readonly applied = new Set<string>();
+  private readonly pending = new Map<string, Op>();
+  private readonly listeners = new Set<(changes: TextChange[]) => void>();
 
   constructor(private readonly replicaId: string) {}
 
@@ -46,6 +50,7 @@ export class FugueDoc {
       const op: Op = { type: 'insert', opId: { replica: this.replicaId, counter: this.counter }, parent: parent.id, side, text: chunk };
       this.counter += chunk.length;
       this.insertChunk(op);
+      this.applied.add(idKey(op.opId));
       ops.push(op);
       index += chunk.length;
     }
@@ -59,6 +64,7 @@ export class FugueDoc {
     const op: Op = { type: 'delete', opId: { replica: this.replicaId, counter: this.counter++ }, targets: targets.map(n => n.id!) };
     for (const node of targets) node.deleted = true;
     this.observe(op.opId);
+    this.applied.add(idKey(op.opId));
     return [op];
   }
 
@@ -98,7 +104,67 @@ export class FugueDoc {
     this.order.splice(position, 0, ...chain);
   }
 
-  apply(_op: Op): void { throw new Error('Remote apply is not implemented'); }
+  apply(op: Op): void {
+    const key = idKey(op.opId);
+    if (this.applied.has(key)) return;
+    const before = this.listeners.size ? this.visible() : [];
+    this.pending.set(key, op);
+    let progress: boolean;
+    do {
+      progress = false;
+      for (const [pendingKey, candidate] of this.pending) {
+        const ready = candidate.type === 'insert'
+          ? candidate.parent === null || this.nodes.has(idKey(candidate.parent))
+          : candidate.targets.every(id => this.nodes.has(idKey(id)));
+        if (!ready) continue;
+        if (candidate.type === 'insert') this.insertChunk(candidate);
+        else {
+          for (const id of candidate.targets) this.nodes.get(idKey(id))!.deleted = true;
+          this.observe(candidate.opId);
+        }
+        this.applied.add(pendingKey);
+        this.pending.delete(pendingKey);
+        progress = true;
+      }
+    } while (progress);
+    if (!this.listeners.size) return;
+    const after = this.visible();
+    const oldPositions = new Map(before.map((node, i) => [node, i]));
+    const changes: TextChange[] = [];
+    let from = 0;
+    let inserted = '';
+    for (const node of after) {
+      const oldIndex = oldPositions.get(node);
+      if (oldIndex === undefined) inserted += node.char;
+      else {
+        if (oldIndex !== from || inserted) changes.push({ from, to: oldIndex, insert: inserted });
+        from = oldIndex + 1;
+        inserted = '';
+      }
+    }
+    if (from !== before.length || inserted) changes.push({ from, to: before.length, insert: inserted });
+    if (changes.length) for (const cb of this.listeners) cb(changes);
+  }
+
+  pendingCount(): number { return this.pending.size; }
+
+  onChange(cb: (changes: TextChange[]) => void): () => void {
+    this.listeners.add(cb);
+    return () => { this.listeners.delete(cb); };
+  }
+
+  inspect(): TreeSnapshot {
+    const snapshots = new Map<Node, TreeSnapshot>();
+    for (const node of [this.root, ...this.order]) snapshots.set(node, {
+      id: node.id && { ...node.id }, char: node.char, deleted: node.deleted,
+      side: node === this.root ? null : node.side, left: [], right: [],
+    });
+    for (const [node, snapshot] of snapshots) {
+      snapshot.left = node.leftChildren.map(child => snapshots.get(child)!);
+      snapshot.right = node.rightChildren.map(child => snapshots.get(child)!);
+    }
+    return snapshots.get(this.root)!;
+  }
   text(): string { return this.visible().map(n => n.char).join(''); }
   version(): Record<string, number> { return { ...this.versions }; }
 }
