@@ -10,6 +10,8 @@ import dev.weft.server.store.IncomingOp;
 import dev.weft.server.store.OpStore;
 import dev.weft.server.store.StoredOp;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
 import org.springframework.stereotype.Component;
@@ -31,7 +33,9 @@ public class SyncHandler extends TextWebSocketHandler {
     }
 
     @Override public void afterConnectionEstablished(WebSocketSession session) {
+        session.setTextMessageSizeLimit(65536);
         session.getAttributes().put("sender", new ConcurrentWebSocketSessionDecorator(session, 10000, 10 * 1024 * 1024));
+        session.getAttributes().put("rate", new RateLimiter(20, Clock.systemUTC()));
     }
 
     private WebSocketSession sender(WebSocketSession session) {
@@ -47,6 +51,10 @@ public class SyncHandler extends TextWebSocketHandler {
     }
 
     @Override protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
+        var rate = (RateLimiter) session.getAttributes().get("rate");
+        if (message.getPayload().getBytes(StandardCharsets.UTF_8).length > 65536 || !rate.tryAcquire()) {
+            error(session, "LIMIT_EXCEEDED", "Message size or rate exceeded"); return;
+        }
         JsonNode msg;
         try { msg = json.readTree(message.getPayload()); }
         catch (JsonProcessingException e) { error(session, "BAD_MESSAGE", "Invalid JSON"); return; }
@@ -84,7 +92,10 @@ public class SyncHandler extends TextWebSocketHandler {
                 var page = ops.after(doc, after, 5001);
                 done = page.size() <= 5000;
                 var selected = page.subList(0, Math.min(5000, page.size()));
-                send(sender(session), new Messages.Catchup("catchup", wire(selected), head, done));
+                var chunks = split(wire(selected));
+                for (int i = 0; i < chunks.size(); i++) {
+                    send(sender(session), new Messages.Catchup("catchup", chunks.get(i), head, done && i == chunks.size() - 1));
+                }
                 if (!selected.isEmpty()) after = selected.getLast().seq();
             } while (!done);
         });
@@ -96,6 +107,21 @@ public class SyncHandler extends TextWebSocketHandler {
         return result;
     }
 
+    private List<List<Messages.SequencedOp>> split(List<Messages.SequencedOp> ops) throws JsonProcessingException {
+        List<List<Messages.SequencedOp>> pages = new ArrayList<>();
+        List<Messages.SequencedOp> page = new ArrayList<>();
+        int bytes = 200;
+        for (var op : ops) {
+            int size = json.writeValueAsBytes(op).length + 1;
+            if (!page.isEmpty() && (bytes + size > 64000 || page.size() == 5000)) {
+                pages.add(page); page = new ArrayList<>(); bytes = 200;
+            }
+            page.add(op); bytes += size;
+        }
+        if (!page.isEmpty() || pages.isEmpty()) pages.add(page);
+        return pages;
+    }
+
     private boolean nonempty(JsonNode value, int max) {
         return value.isTextual() && !value.asText().isEmpty() && value.asText().length() <= max;
     }
@@ -105,18 +131,29 @@ public class SyncHandler extends TextWebSocketHandler {
     }
 
     private boolean validOp(JsonNode op) {
-        return op.isObject() && (op.path("type").asText().equals("insert") || op.path("type").asText().equals("delete"))
-                && nonempty(op.path("opId").path("replica"), 64) && counter(op.path("opId").path("counter"));
+        if (!op.isObject() || !validId(op.path("opId"))) return false;
+        if (op.path("type").asText().equals("insert")) {
+            return op.has("parent") && (op.path("parent").isNull() || validId(op.path("parent")))
+                    && (op.path("side").asText().equals("L") || op.path("side").asText().equals("R"))
+                    && op.path("text").isTextual() && !op.path("text").asText().isEmpty();
+        }
+        if (!op.path("type").asText().equals("delete") || !op.path("targets").isArray()) return false;
+        for (var target : op.path("targets")) if (!validId(target)) return false;
+        return true;
     }
+
+    private boolean validId(JsonNode id) { return nonempty(id.path("replica"), 64) && counter(id.path("counter")); }
 
     private void batch(WebSocketSession session, JsonNode msg) throws IOException {
         String doc = (String) session.getAttributes().get("doc");
         if (doc == null) { error(session, "NO_HELLO", "Send hello first"); return; }
         if (!msg.path("ops").isArray()) { error(session, "BAD_MESSAGE", "Expected ops array"); return; }
+        if (msg.path("ops").size() > 500) { error(session, "LIMIT_EXCEEDED", "Batch exceeds 500 ops"); return; }
         List<IncomingOp> incoming = new ArrayList<>();
         List<JsonNode> ids = new ArrayList<>();
         for (var op : msg.path("ops")) {
             if (!validOp(op)) { error(session, "BAD_MESSAGE", "Invalid operation"); return; }
+            if (json.writeValueAsBytes(op).length > 60000) { error(session, "LIMIT_EXCEEDED", "Operation exceeds wire budget"); return; }
             var id = op.path("opId");
             ids.add(id);
             incoming.add(new IncomingOp(id.path("replica").asText(), id.path("counter").asLong(), json.writeValueAsString(op)));
@@ -125,11 +162,13 @@ public class SyncHandler extends TextWebSocketHandler {
             var stored = ops.append(doc, incoming);
             send(sender(session), new Messages.Ack("ack", ids));
             if (stored.isEmpty()) return;
-            var broadcast = new Messages.Ops("ops", wire(stored));
-            for (var other : sessions) {
-                if (other.getId().equals(session.getId()) || !other.isOpen()) continue;
-                try { send(other, broadcast); }
-                catch (IOException e) { other.close(CloseStatus.SERVER_ERROR); }
+            for (var page : split(wire(stored))) {
+                var broadcast = new Messages.Ops("ops", page);
+                for (var other : sessions) {
+                    if (other.getId().equals(session.getId()) || !other.isOpen()) continue;
+                    try { send(other, broadcast); }
+                    catch (IOException e) { other.close(CloseStatus.SERVER_ERROR); }
+                }
             }
         });
     }

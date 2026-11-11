@@ -24,50 +24,7 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import static org.assertj.core.api.Assertions.*;
 
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-public class SyncHandlerTest extends PostgresTest {
-    @LocalServerPort protected int port;
-    @Autowired protected DocStore docs;
-    @Autowired protected OpStore ops;
-    @Autowired protected ObjectMapper json;
-
-    protected String operation(int counter) {
-        return "{\"type\":\"insert\",\"opId\":{\"replica\":\"a\",\"counter\":" + counter
-                + "},\"parent\":null,\"side\":\"R\",\"text\":\"x\"}";
-    }
-
-    protected class Client implements AutoCloseable {
-        final BlockingQueue<JsonNode> messages = new LinkedBlockingQueue<>();
-        final BlockingQueue<CloseStatus> closes = new LinkedBlockingQueue<>();
-        final WebSocketSession session;
-
-        Client() throws Exception {
-            var container = ContainerProvider.getWebSocketContainer();
-            container.setDefaultMaxTextMessageBufferSize(10 * 1024 * 1024);
-            session = new StandardWebSocketClient(container).execute(new TextWebSocketHandler() {
-                @Override protected void handleTextMessage(WebSocketSession s, TextMessage m) throws Exception {
-                    messages.add(json.readTree(m.getPayload()));
-                }
-                @Override public void afterConnectionClosed(WebSocketSession s, CloseStatus status) {
-                    closes.add(status);
-                }
-            }, "ws://localhost:" + port + "/ws").get(10, TimeUnit.SECONDS);
-        }
-        void send(String data) throws Exception { session.sendMessage(new TextMessage(data)); }
-        JsonNode receive() throws Exception {
-            JsonNode result = messages.poll(10, TimeUnit.SECONDS);
-            assertThat(result).as("server message").isNotNull();
-            return result;
-        }
-        void hello(String doc, long seq) throws Exception {
-            send("{\"t\":\"hello\",\"doc\":\"" + doc + "\",\"replica\":\"test\",\"lastSeq\":" + seq + "}");
-        }
-        void batch(String... payloads) throws Exception {
-            send("{\"t\":\"ops\",\"ops\":[" + String.join(",", payloads) + "]}");
-        }
-        @Override public void close() throws Exception { session.close(); }
-    }
-
+public class SyncHandlerTest extends SocketTestBase {
     @Test void helloOnEmptyDocReturnsEmptyCatchup() throws Exception {
         try (var client = new Client()) {
             client.hello(docs.create(), 0);
@@ -110,12 +67,16 @@ public class SyncHandlerTest extends PostgresTest {
         ops.append(doc, IntStream.range(0, 12000).mapToObj(i -> new IncomingOp("a", i, operation(i))).toList());
         try (var client = new Client()) {
             client.hello(doc, 0);
-            var p1 = client.receive(); var p2 = client.receive(); var p3 = client.receive();
-            assertThat(List.of(p1.path("ops").size(), p2.path("ops").size(), p3.path("ops").size()))
-                    .containsExactly(5000, 5000, 2000);
-            assertThat(p1.path("done").asBoolean()).isFalse();
-            assertThat(p2.path("done").asBoolean()).isFalse();
-            assertThat(p3.path("done").asBoolean()).isTrue();
+            int total = 0; int pages = 0; boolean done;
+            do {
+                var page = client.receive();
+                assertThat(page.path("ops").size()).isBetween(1, 5000);
+                assertThat(json.writeValueAsBytes(page).length).isLessThanOrEqualTo(65536);
+                total += page.path("ops").size(); pages++;
+                done = page.path("done").asBoolean();
+            } while (!done);
+            assertThat(total).isEqualTo(12000);
+            assertThat(pages).isGreaterThanOrEqualTo(3);
         }
     }
 
@@ -154,3 +115,4 @@ public class SyncHandlerTest extends PostgresTest {
         }
     }
 }
+

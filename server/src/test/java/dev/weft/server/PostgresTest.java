@@ -8,11 +8,10 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 @SpringBootTest
-@Testcontainers
 public abstract class PostgresTest {
-    @Container
     protected static final PostgreSQLContainer<?> POSTGRES =
             new PostgreSQLContainer<>("postgres:16-alpine");
+    static { POSTGRES.start(); }
 
     @DynamicPropertySource
     static void configurePostgres(DynamicPropertyRegistry registry) {
