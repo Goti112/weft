@@ -54,9 +54,9 @@ export class IdbStore implements Store {
   setLastSeq(doc: string, lastSeq: number): Promise<void> { return this.update(doc, s => ({ ...s, lastSeq })); }
 }
 
-export async function openStore(): Promise<{ store: Store; persistent: boolean }> {
+export async function openStore(name = 'weft-v1'): Promise<{ store: Store; persistent: boolean }> {
   try {
-    const store = new IdbStore(); await store.load('__probe__');
+    const store = new IdbStore(name); await store.load('__probe__');
     return { store, persistent: true };
   } catch { return { store: new MemoryStore(), persistent: false }; }
 }

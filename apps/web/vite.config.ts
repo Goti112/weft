@@ -1,2 +1,3 @@
 import { defineConfig } from 'vite';
-export default defineConfig({ server: { proxy: { '/ws': { target: 'ws://localhost:8080', ws: true }, '/api': 'http://localhost:8080' } } });
+const backend = process.env.WEFT_BACKEND_URL ?? 'http://localhost:8080';
+export default defineConfig({ server: { proxy: { '/ws': { target: backend.replace(/^http/, 'ws'), ws: true }, '/api': backend } } });
