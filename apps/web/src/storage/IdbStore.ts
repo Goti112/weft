@@ -44,7 +44,17 @@ export class IdbStore implements Store {
 
   saveState(doc: string, state: StoredState): Promise<void> {
     const snapshot = cloneState(state);
-    return this.update(doc, () => snapshot);
+    return this.update(doc, previous => {
+      const ops = new Map([...previous.ops, ...snapshot.ops].map(op => [idKey(op.opId), op]));
+      const acknowledged = new Set<string>();
+      for (const version of [previous, snapshot]) {
+        const pending = new Set(version.pending.map(op => idKey(op.opId)));
+        for (const op of version.ops) if (!pending.has(idKey(op.opId))) acknowledged.add(idKey(op.opId));
+      }
+      // Merge inside the read/write transaction: stale tabs cannot overwrite
+      // another writer's log or resurrect operations already acknowledged.
+      return { ...snapshot, ops: [...ops.values()], pending: [...ops.values()].filter(op => !acknowledged.has(idKey(op.opId))) };
+    });
   }
   saveReplicaId(doc: string, id: string): Promise<void> { return this.update(doc, s => ({ ...s, replicaId: id })); }
   appendOps(doc: string, ops: Op[]): Promise<void> {

@@ -1,4 +1,4 @@
-import { Annotation, type Extension } from '@codemirror/state';
+import { Annotation, Transaction, type Extension } from '@codemirror/state';
 import { ViewPlugin, type EditorView, type ViewUpdate } from '@codemirror/view';
 import type { Replica } from '../replica/Replica';
 
@@ -10,7 +10,7 @@ export function weftBinding(replica: Replica): Extension {
     private destroyed = false;
     constructor(view: EditorView) {
       this.unsubscribe = replica.doc.onChange(changes => {
-        view.dispatch({ changes, annotations: remoteAnnotation.of(true) });
+        view.dispatch({ changes, annotations: [remoteAnnotation.of(true), Transaction.addToHistory.of(false)] });
       });
       this.unsubscribeLocal = replica.on('change', () => queueMicrotask(() => {
         if (this.destroyed) return;
@@ -19,7 +19,7 @@ export function weftBinding(replica: Replica): Extension {
         let from = 0, suffix = 0;
         while (from < before.length && from < after.length && before[from] === after[from]) from++;
         while (suffix < before.length - from && suffix < after.length - from && before[before.length - suffix - 1] === after[after.length - suffix - 1]) suffix++;
-        view.dispatch({ changes: { from, to: before.length - suffix, insert: after.slice(from, after.length - suffix) }, annotations: remoteAnnotation.of(true) });
+        view.dispatch({ changes: { from, to: before.length - suffix, insert: after.slice(from, after.length - suffix) }, annotations: [remoteAnnotation.of(true), Transaction.addToHistory.of(false)] });
       }));
     }
     update(update: ViewUpdate): void {

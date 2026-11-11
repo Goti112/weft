@@ -27,7 +27,7 @@ export class Replica {
     this.doc = new FugueDoc(this.replicaId);
     for (const op of state.ops) { this.doc.apply(op); this.ops.set(idKey(op.opId), op); }
     for (const op of state.pending) this.pending.set(idKey(op.opId), op);
-    this.client = new SyncClient({ ...opts, replica: this.replicaId, lastSeq: state.lastSeq, pending: state.pending,
+    this.client = new SyncClient({ ...opts, replica: this.replicaId, lastSeq: 0, pending: state.pending,
       onRemote: incoming => {
         for (const { op } of incoming) { this.doc.apply(op); this.ops.set(idKey(op.opId), op); }
         this.persist(); this.emit('change', undefined);
@@ -43,10 +43,10 @@ export class Replica {
 
   static async create(opts: Options): Promise<Replica> {
     const state = await opts.store.load(opts.doc);
-    if (!state.replicaId) {
-      state.replicaId = crypto.randomUUID().slice(0, 8);
-      await opts.store.saveReplicaId(opts.doc, state.replicaId);
-    }
+    // A persisted identity may already have a live writer in another tab.
+    // Replayed operations retain their original IDs; new edits get a fresh writer.
+    state.replicaId = crypto.randomUUID();
+    await opts.store.saveReplicaId(opts.doc, state.replicaId);
     const replica = new Replica(opts, state); replica.client.start(); return replica;
   }
 
@@ -66,7 +66,7 @@ export class Replica {
 
   private persist(): Promise<boolean> {
     return this.opts.store.saveState(this.opts.doc, {
-      replicaId: this.replicaId, ops: [...this.ops.values()], pending: [...this.pending.values()], lastSeq: this.client.lastSeq,
+      replicaId: this.replicaId, ops: [...this.ops.values()], pending: [...this.pending.values()], lastSeq: 0,
     }).then(() => true, error => {
       this.error = error instanceof Error ? error : new Error(String(error));
       this.client.setPaused(true); this.emit('error', this.error); return false;

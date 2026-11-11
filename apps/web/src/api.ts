@@ -5,9 +5,3 @@ export async function createDoc(): Promise<string> {
   return data.id;
 }
 export function wsUrl(): string { return `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`; }
-
-export function tabId(): string {
-  let id = sessionStorage.getItem('weft-tab');
-  if (!id) { id = crypto.randomUUID(); sessionStorage.setItem('weft-tab', id); }
-  return id;
-}

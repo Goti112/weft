@@ -52,6 +52,13 @@ test('lastSeq tracks max seq received', () => {
   s.sockets[0].receive({ t: 'ops', ops: [{ seq: 3, op: op(2) }] });
   expect(s.client.lastSeq).toBe(8);
 });
+
+test('reconnect covers messages lost by reordering before disconnect', () => {
+  const s = setup(); s.done();
+  s.sockets[0].receive({ t: 'ops', ops: [{ seq: 2, op: op(1) }] });
+  s.client.setPaused(true); s.client.setPaused(false); vi.advanceTimersByTime(0);
+  expect(JSON.parse(s.sockets[1].sent[0]).lastSeq).toBe(0);
+});
 test('flush splits pending into batches under limits', () => {
   const s = setup(Array.from({ length: 1200 }, (_, i) => op(i))); s.done();
   expect(s.sockets[0].sent.slice(1).map(raw => JSON.parse(raw).ops.length)).toEqual([500, 500, 200]);

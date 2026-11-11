@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { createDoc, tabId, wsUrl } from '../api';
+import { createDoc, wsUrl } from '../api';
 import { Editor } from '../editor/Editor';
 import { Replica } from '../replica/Replica';
 import { openStore } from '../storage/IdbStore';
@@ -24,7 +24,7 @@ export function DocPage() {
       if (id === 'new') {
         const created = await createDoc(); if (active) navigate(`/d/${created}`, { replace: true }); return;
       }
-      const opened = await openStore(`weft-v1-${tabId()}`);
+      const opened = await openStore();
       if (!active || !id) return;
       current = await Replica.create({ doc: id, name: 'tu documento', store: opened.store, socketFactory: url => new WebSocket(url), url: wsUrl() });
       if (!active) { current.destroy(); return; }

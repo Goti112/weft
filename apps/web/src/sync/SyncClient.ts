@@ -26,6 +26,7 @@ export class SyncClient {
   private ready = false;
   private attempt = 0;
   private seq: number;
+  private opened = false;
   private readonly pending = new Map<string, Op>();
   private readonly inFlight = new Set<string>();
   private reconnect?: ReturnType<typeof setTimeout>;
@@ -64,7 +65,13 @@ export class SyncClient {
     catch { this.scheduleReconnect(); return; }
     this.socket = socket; this.tokens = 19; this.updated = Date.now();
     socket.onopen = () => {
-      if (this.socket === socket) this.send({ t: 'hello', doc: this.opts.doc, replica: this.opts.replica, lastSeq: this.seq });
+      if (this.socket === socket) {
+        // Reordering can leave holes below the maximum observed sequence.
+        // Without a delivery watermark, replay is the safe reconnect checkpoint.
+        const lastSeq = this.opened ? 0 : this.opts.lastSeq;
+        this.opened = true;
+        this.send({ t: 'hello', doc: this.opts.doc, replica: this.opts.replica, lastSeq });
+      }
     };
     socket.onmessage = event => {
       if (this.socket !== socket) return;

@@ -16,10 +16,36 @@ test('pending ops survive reopen', async () => {
   const old = await create(server, store); old.setPaused(true); old.insert(0, 'offline'); old.destroy();
   const reopened = await create(server, store);
   expect(reopened.doc.text()).toBe('offline'); expect(reopened.pendingCount).toBeGreaterThan(0);
-  expect(reopened.replicaId).toBe(old.replicaId);
+  expect(reopened.replicaId).not.toBe(old.replicaId);
   reopened.setPaused(false);
   await waitFor(() => expect(server.ops).toHaveLength(1));
   await waitFor(() => expect(reopened.pendingCount).toBe(0));
+});
+
+test('cloned stored identity cannot allocate duplicate operation ids', async () => {
+  const server = new FakeServer();
+  const aStore = new MemoryStore(), bStore = new MemoryStore();
+  await aStore.saveReplicaId('doc', 'cloned'); await bStore.saveReplicaId('doc', 'cloned');
+  const a = await create(server, aStore), b = await create(server, bStore);
+  await waitFor(() => expect(b.status).toBe('connected'));
+  a.setPaused(true); b.setPaused(true); a.insert(0, 'A'); b.insert(0, 'B');
+  a.setPaused(false); b.setPaused(false);
+  await waitFor(() => expect(a.pendingCount + b.pendingCount).toBe(0));
+  expect(a.doc.text()).toBe(b.doc.text());
+  expect(a.doc.text()).toContain('A'); expect(a.doc.text()).toContain('B');
+});
+
+test('reopen recovers an operation missed before a higher sequence', async () => {
+  const server = new FakeServer(), store = new MemoryStore();
+  const old = await create(server, store);
+  await waitFor(() => expect(old.status).toBe('connected'));
+  const { FugueDoc } = await import('@weft/crdt');
+  const remote = new FugueDoc('remote');
+  server.ops.push({ seq: 1, op: remote.insert(0, 'a')[0] }, { seq: 2, op: remote.insert(1, 'b')[0] });
+  server.sockets[0].receive({ t: 'ops', ops: [server.ops[1]] });
+  await Promise.resolve(); old.destroy();
+  const reopened = await create(server, store);
+  await waitFor(() => expect(reopened.doc.text()).toBe('ab'));
 });
 test('two replicas converge through FakeServer', async () => {
   const server = new FakeServer(); const a = await create(server), b = await create(server);
