@@ -1,0 +1,7 @@
+spring:
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/weft}
+    username: ${SPRING_DATASOURCE_USERNAME:weft}
+    password: ${SPRING_DATASOURCE_PASSWORD:weft}
+weft:
+  allowed-origins: ${WEFT_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:8080}
