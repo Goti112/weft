@@ -7,10 +7,13 @@ import { NetworkSim } from '../sync/NetworkSim';
 import { runGuidedScenario } from './GuidedScenario';
 import { NetworkControls } from './NetworkControls';
 import { Panel } from './Panel';
+import { EventLog, summarize } from './eventLog';
+import { Inspector } from './inspector/Inspector';
 import './demo.css';
 
 export function DemoPage() {
   const [network] = useState(() => new NetworkSim());
+  const [log] = useState(() => new EventLog());
   const [replicas, setReplicas] = useState<Replica[]>([]);
   const [running, setRunning] = useState(false); const [converged, setConverged] = useState(false);
   const [error, setError] = useState(''); const [, render] = useState(0);
@@ -24,11 +27,12 @@ export function DemoPage() {
         owned.push(replica); if (!active) { replica.destroy(); return; }
         for (const event of ['change', 'pending', 'status'] as const) unsubscribe.push(replica.on(event, () => { if (event === 'change') setConverged(false); render(n => n + 1); }));
         unsubscribe.push(replica.on('error', () => setError('No se han podido guardar los cambios de la demo.')));
+        unsubscribe.push(replica.on('message', ({ dir, msg }) => log.push({ at: Date.now(), replica: name, dir, t: msg.t, summary: summarize(msg) })));
       }
       owned[2].insert(0, 'Escribid aquí: []'); setReplicas([...owned]);
     })().catch(err => { if (active) setError(err instanceof Error ? err.message : 'No se ha podido conectar con la demo.'); });
     return () => { active = false; controller.current?.abort(); unsubscribe.forEach(fn => fn()); owned.forEach(r => r.destroy()); };
-  }, [network]);
+  }, [network, log]);
 
   async function guide() {
     if (replicas.length !== 3 || running) return;
@@ -51,6 +55,7 @@ export function DemoPage() {
       <div className="demo-caption" role="status"><span>{converged ? '✓ Los tres documentos coinciden. Ningún cambio se ha perdido.' : 'Escribe en cualquier panel. Cada uno conserva sus propios cambios.'}</span><span>WebSocket · PostgreSQL · Fugue</span></div>
       <NetworkControls network={network} />
     </section>
+    {replicas.length === 3 && <Inspector replicas={replicas} log={log} />}
     <div className="share-prompt"><span>¿Y si lo pruebas con alguien de verdad?</span><Link to="/d/new">Abrir un documento compartible →</Link></div>
     <footer><span>weft / Cada cambio cuenta.</span><span>Un CRDT propio. Cero conflictos. Sin registro.</span></footer>
   </main>;
