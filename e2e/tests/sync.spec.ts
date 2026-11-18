@@ -1,4 +1,23 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
+
+/** Number of pending (unacknowledged) ops already written to the page's IndexedDB. */
+function savedPending(page: Page): Promise<number> {
+  return page.evaluate(async () => {
+    let total = 0;
+    for (const entry of await indexedDB.databases()) {
+      if (!entry.name?.startsWith('weft-v1')) continue;
+      total += await new Promise<number>((resolve, reject) => {
+        const open = indexedDB.open(entry.name!);
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const db = open.result, tx = db.transaction('ops'), all = tx.objectStore('ops').getAll();
+          tx.oncomplete = () => { db.close(); resolve(all.result.filter((e: { pending: boolean }) => e.pending).length); };
+        };
+      });
+    }
+    return total;
+  });
+}
 
 test('opener tabs allocate independent operations', async ({ browser, request, baseURL }) => {
   const { id } = await (await request.post('/api/docs')).json() as { id: string };
@@ -28,22 +47,7 @@ test('fresh tab recovers closed offline tab edits', async ({ browser, request, b
     await expect(old.getByText('Conectado', { exact: true })).toBeVisible();
     await expect(old.getByText('✓ Listo para trabajar sin conexión', { exact: true })).toBeVisible();
     await context.setOffline(true); await old.getByRole('textbox').pressSequentially('recover me');
-    await expect.poll(() => old.evaluate(async () => {
-      const databases = await indexedDB.databases();
-      for (const entry of databases) {
-        if (!entry.name?.startsWith('weft-v1')) continue;
-        const pending = await new Promise<number>((resolve, reject) => {
-          const open = indexedDB.open(entry.name!);
-          open.onerror = () => reject(open.error);
-          open.onsuccess = () => {
-            const db = open.result, tx = db.transaction('ops'), all = tx.objectStore('ops').getAll();
-            tx.oncomplete = () => { db.close(); resolve(all.result.filter((entry: { pending: boolean }) => entry.pending).length); };
-          };
-        });
-        if (pending >= 'recover me'.length) return true;
-      }
-      return false;
-    })).toBe(true);
+    await expect.poll(() => savedPending(old)).toBeGreaterThanOrEqual('recover me'.length);
     await old.close();
     const fresh = await context.newPage(); await fresh.goto(`/d/${id}`);
     await expect(fresh.getByRole('textbox')).toContainText('recover me');
@@ -81,6 +85,9 @@ test('offline reload keeps edits', async ({ browser, request, baseURL }) => {
     await expect(pa.getByText('Conectado', { exact: true })).toBeVisible();
     await expect(pa.getByText('✓ Listo para trabajar sin conexión', { exact: true })).toBeVisible();
     await a.setOffline(true); await pa.getByRole('textbox').pressSequentially('sin red ');
+    // Writes to IndexedDB are asynchronous: reload once the keystrokes are durable,
+    // as a person would, rather than racing the last write.
+    await expect.poll(() => savedPending(pa)).toBeGreaterThanOrEqual('sin red '.length);
     await pa.reload({ waitUntil: 'domcontentloaded' });
     await expect(pa.getByRole('textbox')).toContainText('sin red');
     await pa.getByRole('textbox').press('ControlOrMeta+End');

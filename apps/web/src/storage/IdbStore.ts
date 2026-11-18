@@ -70,10 +70,10 @@ export class IdbStore implements Store {
   commit(doc: string, change: Commit): Promise<void> {
     return this.run('readwrite', (meta, ops) => {
       for (const op of change.local ?? []) {
-        const key = [doc, idKey(op.opId)];
-        const existing = ops.get(key);
-        // Never overwrite: another tab may already have this op acknowledged.
-        existing.onsuccess = () => { if (!existing.result) ops.put({ op, pending: true } satisfies Entry, key); };
+        // add() never overwrites: another tab may already have this op acknowledged.
+        // A single request instead of get + put keeps a keystroke's write short.
+        const added = ops.add({ op, pending: true } satisfies Entry, [doc, idKey(op.opId)]);
+        added.onerror = event => { if (added.error?.name === 'ConstraintError') { event.preventDefault(); event.stopPropagation(); } };
       }
       for (const op of change.remote ?? []) ops.put({ op, pending: false } satisfies Entry, [doc, idKey(op.opId)]);
       for (const id of change.acked ?? []) {

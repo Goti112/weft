@@ -17,6 +17,8 @@ export class Replica {
   status: SyncStatus = 'offline';
   error: Error | null = null;
   private readonly pending = new Map<string, Op>();
+  private unsaved: Op[] = [];
+  private saving = false;
   private readonly listeners = new Map<keyof ReplicaEvents, Set<(payload: never) => void>>();
   private readonly client: SyncClient;
   private destroyed = false;
@@ -61,10 +63,25 @@ export class Replica {
   private local(ops: Op[]): void {
     if (this.destroyed) throw new Error('Replica is destroyed');
     for (const op of ops) this.pending.set(idKey(op.opId), op);
-    // Saved locally before it is sent, so a reload can never lose an edit the server has not acked.
-    const saved = this.commit({ local: ops });
+    this.unsaved.push(...ops);
+    this.saveLocal();
     this.emit('change', undefined); this.emit('pending', this.pendingCount);
-    void saved.then(ok => { if (ok && !this.destroyed) this.client.submit(ops.filter(op => this.pending.has(idKey(op.opId)))); });
+  }
+
+  /**
+   * Local edits are saved before they are sent, so a reload never loses an edit
+   * the server has not acked. One write is in flight at a time; keystrokes that
+   * arrive meanwhile go together in the next write instead of queueing one each.
+   */
+  private saveLocal(): void {
+    if (this.saving || !this.unsaved.length) return;
+    const batch = this.unsaved; this.unsaved = []; this.saving = true;
+    void this.commit({ local: batch }).then(ok => {
+      this.saving = false;
+      if (!ok || this.destroyed) return;
+      this.client.submit(batch.filter(op => this.pending.has(idKey(op.opId))));
+      this.saveLocal();
+    });
   }
 
   private commit(change: Commit): Promise<boolean> {

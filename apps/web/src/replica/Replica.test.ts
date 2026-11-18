@@ -21,6 +21,20 @@ test('a keystroke commits only the new op, not the whole log', async () => {
   await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
   expect(commit.mock.calls[0][1]).toEqual({ local: [expect.objectContaining({ text: 'y' })] });
 });
+test('keystrokes typed while a write is in flight are saved together in the next write', async () => {
+  const server = new FakeServer(), store = new MemoryStore();
+  const r = await create(server, store); r.setPaused(true);
+  let release!: () => void;
+  const original = store.commit.bind(store);
+  const commit = vi.spyOn(store, 'commit')
+    .mockImplementationOnce((doc, change) => new Promise<void>(resolve => { release = resolve; }).then(() => original(doc, change)));
+  r.insert(0, 'a'); r.insert(1, 'b'); r.insert(2, 'c');
+  expect(commit).toHaveBeenCalledTimes(1);
+  release();
+  await waitFor(() => expect(commit).toHaveBeenCalledTimes(2));
+  expect(commit.mock.calls[1][1].local?.map(op => op.type === 'insert' && op.text)).toEqual(['b', 'c']);
+  await waitFor(async () => expect((await store.load('doc')).pending).toHaveLength(3));
+});
 test('a catch-up page is committed with its watermark in one write', async () => {
   const server = new FakeServer(), store = new MemoryStore();
   const { FugueDoc } = await import('@weft/crdt');
