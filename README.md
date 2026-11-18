@@ -1,133 +1,157 @@
 # Weft
 
-A local-first collaborative text editor. Several people edit the same document at once, also while offline, and every replica converges to the same text when it reconnects, without losing an edit or interleaving concurrent words.
+Editor de texto colaborativo *local-first*. Varias personas editan el mismo documento a la vez, también sin conexión, y al reconectar todas las réplicas llegan exactamente al mismo texto, sin perder ninguna edición y sin mezclar letra a letra lo que se escribió a la vez.
 
 [![CI](https://github.com/Goti112/weft/actions/workflows/ci.yml/badge.svg)](https://github.com/Goti112/weft/actions/workflows/ci.yml)
 
-- **A text CRDT written from scratch.** [Fugue](https://arxiv.org/abs/2305.00583) in dependency-free TypeScript, checked with property-based tests.
-- **A sync server in Java 21 + Spring Boot.** WebSocket, PostgreSQL, incremental catch-up and idempotent retries.
-- **A demo that shows the internals.** Three live editors with a "cut network" button, a network simulator (latency, duplication, reordering), and an inspector that shows every protocol message, the Fugue tree with its tombstones, and the version vectors.
+- **Un CRDT de texto escrito desde cero:** [Fugue](https://arxiv.org/abs/2305.00583) en TypeScript sin dependencias, verificado con tests de propiedades.
+- **Un servidor de sincronización en Java 21 + Spring Boot:** WebSocket, PostgreSQL, puesta al día incremental y reintentos idempotentes.
+- **Una demo que enseña las tripas:**
+  - tres editores en vivo, cada uno con un botón de "cortar red";
+  - un simulador de red: latencia, mensajes duplicados y desordenados;
+  - un inspector con cada mensaje del protocolo, el árbol Fugue con sus lápidas y los vectores de versión.
 
-## Architecture
+## Arquitectura
 
 ```text
-┌──────────────────── Browser (one per replica) ────────────────────┐
+┌──────────────────── Navegador (una réplica) ──────────────────────┐
 │  React + CodeMirror 6                                             │
-│      │ edits                       ▲ remote changes (one per batch)│
-│  @weft/crdt  FugueDoc ◄──────────► IndexedDB  (one record per op, │
-│      │                                         delivery watermark)│
-│  SyncClient  (pending queue, watermark, backoff, rate limiting)   │
+│      │ ediciones                  ▲ cambios remotos (uno por lote)│
+│  @weft/crdt  FugueDoc ◄──────────► IndexedDB  (un registro por op,│
+│      │                                         marca de entrega)  │
+│  SyncClient  (cola de pendientes, marca, backoff, límite de ritmo)│
 └──────┼────────────────────────────────────────────────────────────┘
        │ WebSocket · JSON
-┌──────▼──────────────── Sync server (Java 21 · Spring Boot) ───────┐
-│  validate → dedupe → assign seq → ack → broadcast · catch-up      │
-│  ops are opaque: the server never interprets or merges text       │
+┌──────▼──────────── Servidor de sincronización (Java 21 · Spring) ─┐
+│  validar → deduplicar → asignar seq → ack → difundir · catch-up   │
+│  las ops son opacas: el servidor nunca interpreta ni fusiona texto│
 └──────┬────────────────────────────────────────────────────────────┘
        │
    PostgreSQL  ops(doc_id, seq, replica_id, counter, payload jsonb)
 ```
 
-## Design decisions
+## Decisiones de diseño
 
-**The CRDT lives only in the client.** The server stores and relays operations without understanding them. That keeps the merge logic in one place ([`packages/crdt`](packages/crdt)), so it can be tested in isolation, and the server needs no copy of it.
+**El CRDT vive solo en el cliente.** El servidor guarda y reenvía operaciones sin entenderlas. La lógica de fusión está en un único sitio ([`packages/crdt`](packages/crdt)), se puede testear de forma aislada y el servidor no necesita una copia en Java.
 
-**Fugue instead of RGA.** Both converge, but Fugue also guarantees *maximal non-interleaving*: if two people type "hola" and "adiós" at the same position, the result is `holaadiós` or `adióshola`, never `haodliaós`. Each UTF-16 code unit is a tree node with a stable `(replica, counter)` id. Deletes leave tombstones so their ids can still anchor concurrent inserts. Edits never split a surrogate pair, so emoji survive concurrent editing.
+**Fugue en lugar de RGA.**
+- Los dos convergen, pero Fugue además garantiza *no intercalado máximo*. Si dos personas escriben "hola" y "adiós" en la misma posición, el resultado es `holaadiós` o `adióshola`, nunca `haodliaós`.
+- Cada unidad UTF-16 es un nodo del árbol con un id estable `(réplica, contador)`.
+- Los borrados dejan lápidas, para que su id siga sirviendo de ancla a inserciones concurrentes.
+- Ninguna edición parte un par sustituto, así que los emojis sobreviven a la edición concurrente.
 
-**Causal buffering that does not care about arrival order.** An op whose parent (or delete target) has not arrived yet is buffered under the id it is waiting for. When that id is integrated, exactly its dependents are woken. Replaying 10,000 ops in reverse order takes the same time as in order. See [`FugueDoc.integrate`](packages/crdt/src/FugueDoc.ts).
+**Búfer causal al que no le importa el orden de llegada.** Si a una op le falta su padre (o el carácter que borra), queda en espera indexada por el id que le falta. Cuando ese id se integra, se despiertan exactamente las ops que dependían de él. Reproducir 10.000 ops en orden inverso cuesta lo mismo que en orden. Véase [`FugueDoc.integrate`](packages/crdt/src/FugueDoc.ts).
 
-**Contiguous sequence numbers plus a delivery watermark.**
-- The server gives each stored op a per-document `seq`. Duplicates do not consume one, so the seqs for a document are always exactly `1..head` ([`OpStore`](server/src/main/java/dev/weft/server/store/OpStore.java)).
-- The client tracks the highest `n` such that it has received every seq up to `n`. Seqs that arrive ahead of a gap wait until it fills ([`SyncClient`](apps/web/src/sync/SyncClient.ts)).
-- On reconnect the client sends that watermark, and the server returns only what is missing. This stays correct when messages are reordered, duplicated or lost right before a disconnect.
+**Números de secuencia contiguos + marca de entrega.**
+- El servidor da a cada op guardada un `seq` por documento. Los duplicados no consumen número, así que los seq de un documento son siempre exactamente `1..head` ([`OpStore`](server/src/main/java/dev/weft/server/store/OpStore.java)).
+- El cliente recuerda el mayor `n` tal que ha recibido todos los seq hasta `n`. Los que llegan por delante de un hueco esperan a que se rellene ([`SyncClient`](apps/web/src/sync/SyncClient.ts)).
+- Al reconectar, el cliente envía esa marca y el servidor solo devuelve lo que falta. Sigue siendo correcto aunque los mensajes se hayan desordenado, duplicado o perdido justo antes de una desconexión.
 
-**Idempotent end to end.**
-- `(doc, replica, counter)` is unique in PostgreSQL. The server acknowledges every op in a batch, including ones it already had. The CRDT ignores ops it has already applied.
-- As a result, any message can be retried or delivered twice safely, and there is no need for exactly-once delivery.
+**Idempotente de punta a punta.**
+- `(doc, réplica, contador)` es único en PostgreSQL.
+- El servidor confirma todas las ops de un lote, también las que ya tenía.
+- El CRDT ignora las ops que ya ha aplicado.
 
-**Durability before transmission.**
-- A local edit is written to IndexedDB before it is sent. Reloading the page offline never loses an edit the server has not acknowledged.
-- Storage is one record per op, so a keystroke costs the same in a 10-character document as in a 100,000-character one ([`IdbStore`](apps/web/src/storage/IdbStore.ts)).
-- Tabs share the log under three merge rules: an acknowledged op never becomes pending again, server-delivered ops count as acknowledged, and the watermark only grows. Each tab writes with a fresh replica id, so two live tabs can never allocate the same op id.
+Así, cualquier mensaje se puede reintentar o entregar dos veces sin problema, y no hace falta una entrega *exactly-once*.
 
-**No races between catch-up and live traffic.** For each document, catch-up and broadcasts run under the same lock. Seq allocation is serialized by a row lock on the document. A client that fails mid-broadcast is disconnected without blocking delivery to the others.
+**Guardar antes de enviar.**
+- Una edición local se escribe en IndexedDB antes de mandarse. Recargar la página sin conexión nunca pierde una edición que el servidor aún no ha confirmado.
+- Se guarda un registro por op: una pulsación cuesta lo mismo en un documento de 10 caracteres que en uno de 100.000 ([`IdbStore`](apps/web/src/storage/IdbStore.ts)).
+- Las pestañas comparten el log con tres reglas de fusión:
+  - una op confirmada nunca vuelve a quedar pendiente;
+  - las ops que llegan del servidor cuentan como confirmadas;
+  - la marca de entrega solo crece.
+- Cada pestaña escribe con un id de réplica nuevo, así que dos pestañas abiertas nunca pueden generar el mismo id de op.
 
-**Limits for a public demo:**
-- 500 ops per batch and 64 KiB per message;
-- 5 MiB of ops per document;
-- 20 messages/s per connection (token bucket on both client and server);
-- catch-up pages bounded by count and by bytes;
-- reconnect backoff with jitter, capped at 10 s;
-- inactive documents deleted after 7 days.
+**Sin carreras entre la puesta al día y el tráfico en vivo.**
+- En cada documento, el catch-up y la difusión de ops nuevas se ejecutan bajo el mismo bloqueo.
+- La asignación de `seq` se serializa con un bloqueo de fila del documento.
+- Si un cliente falla a mitad de la difusión, se le desconecta sin bloquear la entrega a los demás.
 
-## Protocol
+**Límites pensados para una demo pública:**
+- 500 ops por lote y 64 KiB por mensaje;
+- 5 MiB de ops por documento;
+- 20 mensajes/s por conexión, con *token bucket* tanto en el cliente como en el servidor;
+- páginas de catch-up limitadas por número de ops y por bytes;
+- reconexión con *backoff* exponencial con *jitter*, hasta un máximo de 10 s;
+- los documentos inactivos se borran a los 7 días.
 
-| Direction | Message | Payload |
+## Protocolo
+
+| Dirección | Mensaje | Contenido |
 | --- | --- | --- |
-| C → S | `hello` | `doc`, `replica`, `lastSeq` (watermark) |
-| S → C | `catchup` | `ops: [{seq, op}]`, `headSeq`, `done` (paged) |
+| C → S | `hello` | `doc`, `replica`, `lastSeq` (marca de entrega) |
+| S → C | `catchup` | `ops: [{seq, op}]`, `headSeq`, `done` (paginado) |
 | C → S | `ops` | `Op[]` |
-| S → C | `ack` | `opIds` for the whole batch, including duplicates |
-| S → C | `ops` | `[{seq, op}]`, broadcast to the other sessions |
+| S → C | `ack` | `opIds` de todo el lote, duplicados incluidos |
+| S → C | `ops` | `[{seq, op}]`, difusión al resto de sesiones |
 | S → C | `error` | `BAD_MESSAGE` · `NO_HELLO` · `LIMIT_EXCEEDED` · `DOC_NOT_FOUND` |
 
-## Testing
+## Tests
 
-- **Property-based tests** ([fast-check](https://fast-check.dev/)). Each property runs 500 random histories with 2–5 replicas, where ops are delivered shuffled, duplicated and partially synced. The properties are convergence, convergence with emoji and accented characters, and non-interleaving of concurrent typing.
-- **Server integration tests** against real PostgreSQL through Testcontainers. They cover dedupe, contiguous seqs, 8 threads appending concurrently to one document, paged catch-up, malformed messages and every limit.
-- **End-to-end tests** with Playwright against the Docker image:
-  - two browsers editing offline and converging;
-  - reloading the page with no network;
-  - recovering the pending edits of a closed tab;
-  - the guided demo scenario;
-  - a reconnect that resumes from its watermark.
-- **Performance regression tests**: catch-up of 10,000 ops, in order and reversed, must take under 2 s, and a keystroke must write only the new op.
+- **Tests de propiedades** ([fast-check](https://fast-check.dev/)). Cada propiedad ejecuta 500 historias aleatorias con 2–5 réplicas, en las que las ops se entregan desordenadas, duplicadas y sincronizadas a medias. Las propiedades son tres:
+  - convergencia;
+  - convergencia con emojis y tildes;
+  - no intercalado al escribir a la vez.
+- **Tests de integración del servidor** contra PostgreSQL real con Testcontainers. Cubren:
+  - deduplicación y `seq` contiguos;
+  - 8 hilos escribiendo a la vez en el mismo documento;
+  - catch-up paginado;
+  - mensajes malformados y todos los límites.
+- **Tests end-to-end** con Playwright contra la imagen Docker:
+  - dos navegadores que editan sin conexión y convergen;
+  - recargar la página sin red;
+  - recuperar lo pendiente de una pestaña cerrada;
+  - el escenario guiado de la demo;
+  - una reconexión que retoma desde su marca.
+- **Tests de regresión de rendimiento.** La puesta al día de 10.000 ops, en orden y al revés, debe tardar menos de 2 s, y una pulsación debe escribir solo la op nueva.
 
-CI runs all of it on every push.
+El CI lo ejecuta todo en cada push.
 
-### Numbers
+### Números
 
-Measured with Node 24 on a laptop. Catch-up is for a document typed one keystroke at a time, with the editor attached.
+Medido con Node 24 en un portátil. La puesta al día corresponde a un documento escrito pulsación a pulsación, con el editor abierto.
 
 | | |
 | --- | ---: |
-| Local insert in the middle of a 100,000-character document | 6 ms |
-| Remote op applied in the middle of a 100,000-character document | 0.03 ms |
-| Catch-up of 10,000 ops with the editor attached | 141 ms |
-| Same catch-up, applying op by op (the first version) | ≈ 15 s |
+| Inserción local en mitad de un documento de 100.000 caracteres | 6 ms |
+| Op remota aplicada en mitad de un documento de 100.000 caracteres | 0,03 ms |
+| Puesta al día de 10.000 ops con el editor abierto | 141 ms |
+| La misma puesta al día aplicando op a op (primera versión) | ≈ 15 s |
 
-## Run it
+## Ejecutarlo
 
 ```bash
-docker compose up --build        # app on http://localhost:8080
+docker compose up --build        # app en http://localhost:8080
 ```
 
-Use `WEFT_PORT=18081` if port 8080 is taken.
+Si el puerto 8080 está ocupado, usa `WEFT_PORT=18081`.
 
-Development needs Node 24, pnpm, Docker and a JDK. The Gradle wrapper provisions JDK 21 if needed.
+Para desarrollar necesitas Node 24, pnpm, Docker y un JDK. El wrapper de Gradle descarga el JDK 21 si hace falta.
 
 ```bash
 pnpm install
-pnpm lint && pnpm -r test                     # CRDT + web unit and property tests
-(cd server && ./gradlew test)                 # server tests (needs Docker)
+pnpm lint && pnpm -r test                     # tests unitarios y de propiedades (CRDT + web)
+(cd server && ./gradlew test)                 # tests del servidor (necesita Docker)
 docker compose up -d --build && pnpm --filter e2e test:e2e
 ```
 
-## Repository layout
+## Estructura del repositorio
 
 ```text
-packages/crdt   Fugue CRDT: tree, causal buffer, batch apply, tests, benchmarks
-apps/web        React + Vite + CodeMirror 6: sync client, IndexedDB store, demo, inspector
-server          Spring Boot: WebSocket protocol, op store, limits, cleanup job
-e2e             Playwright tests against the Docker image
+packages/crdt   CRDT Fugue: árbol, búfer causal, aplicación por lotes, tests, benchmarks
+apps/web        React + Vite + CodeMirror 6: cliente de sync, almacén IndexedDB, demo, inspector
+server          Spring Boot: protocolo WebSocket, almacén de ops, límites, limpieza
+e2e             Tests de Playwright contra la imagen Docker
 ```
 
-## Next
+## Siguientes pasos
 
-- Run several server instances behind Redis pub/sub, with k6 load tests.
-- Show remote cursors and selections.
-- Compact tombstones.
-- Use an indexed (order-statistic) tree for O(log n) local edits.
+- Varias instancias del servidor coordinadas con Redis pub/sub, con pruebas de carga en k6.
+- Cursores y selecciones de los demás usuarios.
+- Compactación de lápidas.
+- Un árbol indexado (*order-statistic tree*) para ediciones locales en O(log n).
 
-## License
+## Licencia
 
 [MIT](LICENSE) © 2026 Miquel Manzano

@@ -1,67 +1,55 @@
 # @weft/crdt
 
-Dependency-free TypeScript text CRDT using a two-sided Fugue tree. Each UTF-16
-code unit has a stable `(replica, counter)` identifier. Left descendants, the
-node, then right descendants define the text order; siblings use deterministic
-identifier order. Deleted nodes remain as tombstones. Right-chained typing
-preserves contiguous concurrent words.
+CRDT de texto en TypeScript, sin dependencias, basado en un árbol Fugue de dos lados.
+
+- Cada unidad UTF-16 tiene un identificador estable `(replica, counter)`.
+- El orden del texto es el recorrido del árbol: primero los descendientes izquierdos, luego el nodo, luego los derechos. Los hermanos se ordenan de forma determinista por su identificador.
+- Los nodos borrados se quedan como lápidas.
+- Al escribir, cada carácter se encadena a la derecha del anterior, así que las palabras escritas a la vez en el mismo sitio no se mezclan.
 
 ```ts
 import { FugueDoc } from '@weft/crdt';
 const a = new FugueDoc('a');
 const b = new FugueDoc('b');
-a.insert(0, 'hola').forEach(op => b.apply(op));
-a.delete(0, 1).forEach(op => b.apply(op));
+b.applyMany(a.insert(0, 'hola'));
+b.applyMany(a.delete(0, 1));
 console.log(b.text()); // ola
 ```
 
-`insert(index, text)` and `delete(index, length)` apply locally and return ops
-for transmission. `apply(op)` is idempotent and buffers missing dependencies.
-`applyMany(ops)` applies a batch (for example a catch-up page) and notifies
-`onChange` listeners once for the whole batch. Buffered ops are indexed by the
-id they are waiting for, so delivery order does not affect the cost.
-`version()` returns maximum counters, `pendingCount()` counts unresolved ops,
-and `inspect()` returns an independent tree snapshot. `onChange(callback)`
-subscribes to remote changes, in pre-change visible coordinates, and returns
-an unsubscribe function. Local edits do not trigger it.
+## API
 
-Indices use UTF-16. Inserting inside a surrogate pair throws `RangeError`;
-deletion expands to include a complete pair. Insert chunks use at most 1,000
-units and never split a pair. Empty edits return no operations. Invalid
-ranges throw `RangeError`.
+- `insert(index, text)` y `delete(index, length)` editan en local y devuelven las ops que hay que transmitir.
+- `apply(op)` es idempotente y deja en espera las ops cuyas dependencias aún no han llegado.
+- `applyMany(ops)` aplica un lote (por ejemplo, una página de catch-up) y avisa a los listeners de `onChange` una sola vez por lote. Las ops en espera se indexan por el id que les falta, así que el orden de llegada no afecta al coste.
+- `onChange(callback)` se suscribe a los cambios remotos, expresados en coordenadas visibles previas al cambio, y devuelve una función para darse de baja. Las ediciones locales no lo disparan.
+- `version()` devuelve el contador máximo visto por réplica.
+- `pendingCount()` cuenta las ops sin resolver.
+- `inspect()` devuelve una copia independiente del árbol.
 
-## Verification
+Los índices son UTF-16. Insertar dentro de un par sustituto lanza `RangeError`; un borrado que corta un par se amplía para incluirlo entero. Cada op de inserción tiene como máximo 1.000 unidades y nunca parte un par. Las ediciones vacías no generan ops, y los rangos inválidos lanzan `RangeError`.
 
-`pnpm --filter @weft/crdt test` runs unit tests and three fast-check properties,
-500 runs each: convergence, Unicode convergence, and concurrent non-interleaving.
-Histories use 2–5 replicas with 1–30 actions each, partial delivery, shuffled final
-delivery and duplicates.
+## Verificación
+
+`pnpm --filter @weft/crdt test` ejecuta los tests unitarios y tres propiedades de fast-check, de 500 ejecuciones cada una: convergencia, convergencia con Unicode y no intercalado concurrente. Las historias usan 2–5 réplicas con 1–30 acciones cada una, entrega parcial, entrega final desordenada y duplicados.
 
 ## Benchmarks
 
-Windows, Node 24.20.0, Vitest 3.2.7; measured on 2026-11-11 with
-`pnpm --filter @weft/crdt exec vitest bench --run`.
+Windows, Node 24.20.0 y Vitest 3.2.7. Medido con `pnpm --filter @weft/crdt exec vitest bench --run`.
 
-| Operation at index 50,000 | Mean | Samples |
+| Operación en el índice 50.000 | Media | Muestras |
 | --- | ---: | ---: |
-| Local insert | 5.9715 ms | 100 |
-| Local delete | 8.8904 ms | 100 |
-| Remote insert apply | 0.0345 ms | 100 |
+| Inserción local | 5,97 ms | 100 |
+| Borrado local | 8,89 ms | 100 |
+| Inserción remota | 0,03 ms | 100 |
 
-Each benchmark starts with 100,000 characters. Each sample performs a new
-operation; the document changes by at most 101 characters during measurement
-(including the runner's untimed probe). Initialization is excluded. These means
-meet the 16 ms goal; occasional GC pauses exceed it. The implementation uses a
-linear order array and is not intended to guarantee constant-time edits.
+Cada benchmark empieza con un documento de 100.000 caracteres, y cada muestra hace una operación nueva. No se mide la inicialización. Las medias cumplen el objetivo de 16 ms, aunque alguna pausa del recolector de basura lo supera. La implementación usa un array de orden lineal, así que las ediciones locales no son de tiempo constante.
 
-Catch-up of a document typed one keystroke at a time (one op per character),
-measured on 2026-11-18 with an `onChange` listener attached, as in the editor:
+Puesta al día de un documento escrito pulsación a pulsación (una op por carácter), con un listener de `onChange` activo, como en el editor:
 
-| Ops | Per-op `apply` (before) | `applyMany`, pages of 5,000 |
+| Ops | `apply` op a op (antes) | `applyMany`, páginas de 5.000 |
 | --- | ---: | ---: |
-| 5,000 | 4.2 s | — |
-| 10,000 | ≈ 15 s | 141 ms |
-| 20,000 | 58 s | — |
+| 5.000 | 4,2 s | — |
+| 10.000 | ≈ 15 s | 141 ms |
+| 20.000 | 58 s | — |
 
-Replaying 10,000 ops in reverse order takes 150 ms. `test/batch.test.ts` keeps
-both cases under 2 s.
+Reproducir 10.000 ops en orden inverso tarda 150 ms. `test/batch.test.ts` comprueba que los dos casos se quedan por debajo de 2 s.
