@@ -30,11 +30,14 @@ public class OpStore {
                     on conflict (doc_id, replica_id, counter) do nothing
                     returning seq, payload::text
                     """)
-                    .param("doc", docId).param("seq", seq++)
+                    .param("doc", docId).param("seq", seq)
                     .param("replica", op.replicaId()).param("counter", op.counter())
                     .param("payload", op.payloadJson())
                     .query((rs, n) -> new StoredOp(rs.getLong(1), rs.getString(2))).optional();
+            // Only stored ops consume a seq, so a document's seqs are contiguous (1..head).
+            // Clients rely on this to resume catch-up from their delivery watermark.
             if (inserted.isPresent()) {
+                seq++;
                 bytes += op.payloadJson().getBytes(StandardCharsets.UTF_8).length;
                 if (bytes > MAX_BYTES) throw new DocTooLargeException();
                 stored.add(inserted.get());

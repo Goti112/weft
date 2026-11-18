@@ -42,6 +42,13 @@ class OpStoreTest extends PostgresTest {
         assertThat(ops.after(doc, 0, 100)).hasSize(1);
     }
 
+    @Test void seqsStayContiguousWhenBatchContainsDuplicates() {
+        ops.append(doc, List.of(op("a", 0), op("a", 1)));
+        assertThat(ops.append(doc, List.of(op("a", 1), op("a", 2)))).extracting(StoredOp::seq).containsExactly(3L);
+        assertThat(ops.headSeq(doc)).isEqualTo(3L);
+        assertThat(ops.after(doc, 0, 100)).extracting(StoredOp::seq).containsExactly(1L, 2L, 3L);
+    }
+
     @Test void afterReturnsOnlyNewer() {
         ops.append(doc, threeOps());
         assertThat(ops.after(doc, 2, 100)).extracting(StoredOp::seq).containsExactly(3L);

@@ -53,7 +53,10 @@ export class IdbStore implements Store {
       }
       // Merge inside the read/write transaction: stale tabs cannot overwrite
       // another writer's log or resurrect operations already acknowledged.
-      return { ...snapshot, ops: [...ops.values()], pending: [...ops.values()].filter(op => !acknowledged.has(idKey(op.opId))) };
+      // The merged log is a superset of every writer's log, so the highest
+      // watermark is still backed by stored ops.
+      return { ...snapshot, ops: [...ops.values()], pending: [...ops.values()].filter(op => !acknowledged.has(idKey(op.opId))),
+        lastSeq: Math.max(previous.lastSeq, snapshot.lastSeq) };
     });
   }
   saveReplicaId(doc: string, id: string): Promise<void> { return this.update(doc, s => ({ ...s, replicaId: id })); }

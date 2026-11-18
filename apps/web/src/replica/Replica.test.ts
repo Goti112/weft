@@ -47,6 +47,21 @@ test('reopen recovers an operation missed before a higher sequence', async () =>
   const reopened = await create(server, store);
   await waitFor(() => expect(reopened.doc.text()).toBe('ab'));
 });
+test('reopen resumes catch-up from the persisted watermark', async () => {
+  const server = new FakeServer(), store = new MemoryStore();
+  const old = await create(server, store);
+  await waitFor(() => expect(old.status).toBe('connected'));
+  const { FugueDoc } = await import('@weft/crdt');
+  const remote = new FugueDoc('remote');
+  server.ops.push({ seq: 1, op: remote.insert(0, 'a')[0] }, { seq: 2, op: remote.insert(1, 'b')[0] });
+  server.sockets[0].receive({ t: 'ops', ops: server.ops.slice() });
+  await waitFor(async () => expect((await store.load('doc')).lastSeq).toBe(2));
+  old.destroy();
+  const reopened = await create(server, store);
+  await waitFor(() => expect(reopened.status).toBe('connected'));
+  expect(JSON.parse(server.sockets.at(-1)!.sent[0]).lastSeq).toBe(2);
+  expect(reopened.doc.text()).toBe('ab');
+});
 test('two replicas converge through FakeServer', async () => {
   const server = new FakeServer(); const a = await create(server), b = await create(server);
   await waitFor(() => expect(a.status).toBe('connected'));

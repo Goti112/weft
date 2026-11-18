@@ -25,8 +25,10 @@ export class SyncClient {
   private paused = false;
   private ready = false;
   private attempt = 0;
+  /** Delivery watermark: every seq in 1..seq has been received. */
   private seq: number;
-  private opened = false;
+  /** Received seqs above the watermark, waiting for the gap below them to fill. */
+  private readonly ahead = new Set<number>();
   private readonly pending = new Map<string, Op>();
   private readonly inFlight = new Set<string>();
   private reconnect?: ReturnType<typeof setTimeout>;
@@ -66,11 +68,9 @@ export class SyncClient {
     this.socket = socket; this.tokens = 19; this.updated = Date.now();
     socket.onopen = () => {
       if (this.socket === socket) {
-        // Reordering can leave holes below the maximum observed sequence.
-        // Without a delivery watermark, replay is the safe reconnect checkpoint.
-        const lastSeq = this.opened ? 0 : this.opts.lastSeq;
-        this.opened = true;
-        this.send({ t: 'hello', doc: this.opts.doc, replica: this.opts.replica, lastSeq });
+        // The server's seqs are contiguous, so the watermark is a safe resume point
+        // even when reordering lost messages just before a disconnect.
+        this.send({ t: 'hello', doc: this.opts.doc, replica: this.opts.replica, lastSeq: this.seq });
       }
     };
     socket.onmessage = event => {
@@ -78,7 +78,8 @@ export class SyncClient {
       const msg = parseServerMsg(event.data); if (!msg) return;
       this.opts.onMessage?.('in', msg);
       if (msg.t === 'ops' || msg.t === 'catchup') {
-        for (const { seq } of msg.ops) this.seq = Math.max(this.seq, seq);
+        for (const { seq } of msg.ops) if (seq > this.seq) this.ahead.add(seq);
+        while (this.ahead.delete(this.seq + 1)) this.seq++;
         this.opts.onRemote(msg.ops);
         if (msg.t === 'catchup' && msg.done) {
           this.ready = true; this.attempt = 0; this.flush(); this.opts.onStatus('connected');

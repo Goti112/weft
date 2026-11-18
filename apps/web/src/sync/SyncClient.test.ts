@@ -46,18 +46,25 @@ test('broadcast received during catchup is delivered', () => {
   const s = setup(); s.sockets[0].receive({ t: 'ops', ops: [{ seq: 2, op: op(1) }] });
   expect(s.remote).toHaveBeenCalledWith([{ seq: 2, op: op(1) }]);
 });
-test('lastSeq tracks max seq received', () => {
+test('lastSeq is the contiguous delivery watermark', () => {
   const s = setup();
-  s.sockets[0].receive({ t: 'ops', ops: [{ seq: 8, op: op(1) }] });
-  s.sockets[0].receive({ t: 'ops', ops: [{ seq: 3, op: op(2) }] });
-  expect(s.client.lastSeq).toBe(8);
+  s.sockets[0].receive({ t: 'ops', ops: [{ seq: 1, op: op(1) }] });
+  s.sockets[0].receive({ t: 'ops', ops: [{ seq: 3, op: op(3) }] });
+  expect(s.client.lastSeq).toBe(1);
+  s.sockets[0].receive({ t: 'ops', ops: [{ seq: 2, op: op(2) }] });
+  expect(s.client.lastSeq).toBe(3);
 });
-
-test('reconnect covers messages lost by reordering before disconnect', () => {
-  const s = setup(); s.done();
-  s.sockets[0].receive({ t: 'ops', ops: [{ seq: 2, op: op(1) }] });
+test('duplicate deliveries do not move the watermark', () => {
+  const s = setup([], 2);
+  s.sockets[0].receive({ t: 'ops', ops: [{ seq: 2, op: op(2) }, { seq: 2, op: op(2) }] });
+  expect(s.client.lastSeq).toBe(2);
+});
+test('reconnect resumes from the watermark, not from zero', () => {
+  const s = setup();
+  s.sockets[0].receive({ t: 'catchup', ops: [{ seq: 1, op: op(1) }, { seq: 2, op: op(2) }], headSeq: 2, done: true });
+  s.sockets[0].receive({ t: 'ops', ops: [{ seq: 4, op: op(4) }] }); // seq 3 lost by reordering
   s.client.setPaused(true); s.client.setPaused(false); vi.advanceTimersByTime(0);
-  expect(JSON.parse(s.sockets[1].sent[0]).lastSeq).toBe(0);
+  expect(JSON.parse(s.sockets[1].sent[0]).lastSeq).toBe(2);
 });
 test('flush splits pending into batches under limits', () => {
   const s = setup(Array.from({ length: 1200 }, (_, i) => op(i))); s.done();

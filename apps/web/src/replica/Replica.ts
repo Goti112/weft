@@ -27,7 +27,7 @@ export class Replica {
     this.doc = new FugueDoc(this.replicaId);
     for (const op of state.ops) { this.doc.apply(op); this.ops.set(idKey(op.opId), op); }
     for (const op of state.pending) this.pending.set(idKey(op.opId), op);
-    this.client = new SyncClient({ ...opts, replica: this.replicaId, lastSeq: 0, pending: state.pending,
+    this.client = new SyncClient({ ...opts, replica: this.replicaId, lastSeq: state.lastSeq, pending: state.pending,
       onRemote: incoming => {
         for (const { op } of incoming) { this.doc.apply(op); this.ops.set(idKey(op.opId), op); }
         this.persist(); this.emit('change', undefined);
@@ -66,7 +66,7 @@ export class Replica {
 
   private persist(): Promise<boolean> {
     return this.opts.store.saveState(this.opts.doc, {
-      replicaId: this.replicaId, ops: [...this.ops.values()], pending: [...this.pending.values()], lastSeq: 0,
+      replicaId: this.replicaId, ops: [...this.ops.values()], pending: [...this.pending.values()], lastSeq: this.client.lastSeq,
     }).then(() => true, error => {
       this.error = error instanceof Error ? error : new Error(String(error));
       this.client.setPaused(true); this.emit('error', this.error); return false;

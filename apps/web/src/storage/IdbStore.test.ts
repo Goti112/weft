@@ -31,3 +31,9 @@ test('shared document survives stale concurrent snapshots and a fresh tab', asyn
   recovered = await new IdbStore(name).load('doc');
   expect(recovered.ops).toHaveLength(2); expect(recovered.pending).toEqual(bOps);
 });
+test('saveState keeps the highest watermark across writers', async () => {
+  const store = new IdbStore(`test-${crypto.randomUUID()}`);
+  await store.saveState('doc', { replicaId: 'a', ops: [], pending: [], lastSeq: 9 });
+  await store.saveState('doc', { replicaId: 'b', ops: [], pending: [], lastSeq: 4 });
+  expect((await store.load('doc')).lastSeq).toBe(9);
+});
