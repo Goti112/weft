@@ -1,17 +1,35 @@
 import { idKey, type Op } from '@weft/crdt';
-import { cloneState, emptyState, type Store, type StoredState } from './Store';
+import { cloneState, emptyState, type Commit, type Store, type StoredState } from './Store';
+
+type DocState = { replicaId: string | null; lastSeq: number; ops: Map<string, { op: Op; pending: boolean }> };
+const clone = (op: Op): Op => JSON.parse(JSON.stringify(op)) as Op;
 
 export class MemoryStore implements Store {
-  private readonly docs = new Map<string, StoredState>();
-  async load(doc: string): Promise<StoredState> { return cloneState(this.docs.get(doc) ?? emptyState()); }
-  async saveState(doc: string, state: StoredState): Promise<void> { this.docs.set(doc, cloneState(state)); }
-  private update(doc: string, fn: (state: StoredState) => void): void {
-    const state = cloneState(this.docs.get(doc) ?? emptyState()); fn(state); this.docs.set(doc, state);
+  private readonly docs = new Map<string, DocState>();
+
+  private state(doc: string): DocState {
+    let state = this.docs.get(doc);
+    if (!state) { state = { replicaId: null, lastSeq: 0, ops: new Map() }; this.docs.set(doc, state); }
+    return state;
   }
-  async saveReplicaId(doc: string, id: string): Promise<void> { this.update(doc, s => { s.replicaId = id; }); }
-  async appendOps(doc: string, ops: Op[]): Promise<void> {
-    this.update(doc, s => { s.ops = [...new Map([...s.ops, ...ops].map(op => [idKey(op.opId), op])).values()]; });
+
+  async load(doc: string): Promise<StoredState> {
+    const state = this.docs.get(doc);
+    if (!state) return emptyState();
+    const entries = [...state.ops.values()];
+    return cloneState({
+      replicaId: state.replicaId, lastSeq: state.lastSeq,
+      ops: entries.map(e => e.op), pending: entries.filter(e => e.pending).map(e => e.op),
+    });
   }
-  async setPending(doc: string, ops: Op[]): Promise<void> { this.update(doc, s => { s.pending = cloneState({ ...s, pending: ops }).pending; }); }
-  async setLastSeq(doc: string, seq: number): Promise<void> { this.update(doc, s => { s.lastSeq = seq; }); }
+
+  async saveReplicaId(doc: string, id: string): Promise<void> { this.state(doc).replicaId = id; }
+
+  async commit(doc: string, change: Commit): Promise<void> {
+    const state = this.state(doc);
+    for (const op of change.local ?? []) if (!state.ops.has(idKey(op.opId))) state.ops.set(idKey(op.opId), { op: clone(op), pending: true });
+    for (const op of change.remote ?? []) state.ops.set(idKey(op.opId), { op: clone(op), pending: false });
+    for (const id of change.acked ?? []) { const entry = state.ops.get(idKey(id)); if (entry) entry.pending = false; }
+    if (change.lastSeq !== undefined) state.lastSeq = Math.max(state.lastSeq, change.lastSeq);
+  }
 }

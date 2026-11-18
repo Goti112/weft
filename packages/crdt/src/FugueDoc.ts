@@ -25,6 +25,8 @@ export class FugueDoc {
   private counter = 0;
   private readonly applied = new Set<string>();
   private readonly pending = new Map<string, Op>();
+  /** Buffered ops keyed by the missing id they wait for. */
+  private readonly waiting = new Map<string, Op[]>();
   private readonly listeners = new Set<(changes: TextChange[]) => void>();
 
   constructor(private readonly replicaId: string) {}
@@ -142,30 +144,65 @@ export class FugueDoc {
     this.order.splice(position, 0, ...chain);
   }
 
-  apply(op: Op): void {
+  apply(op: Op): void { this.applyMany([op]); }
+
+  /**
+   * Applies remote ops in any order. Listeners get a single notification for
+   * the whole batch, so a catch-up page costs one O(n) diff instead of one per op.
+   */
+  applyMany(ops: readonly Op[]): void {
+    const before = this.listeners.size ? this.visible() : null;
+    let changed = false;
+    for (const op of ops) changed = this.integrate(op) || changed;
+    if (!before || !changed) return;
+    this.notify(before);
+  }
+
+  /** The first id this op depends on that is not in the tree yet, if any. */
+  private missingDependency(op: Op): Id | null {
+    if (op.type === 'insert') return op.parent && !this.nodes.has(idKey(op.parent)) ? op.parent : null;
+    return op.targets.find(id => !this.nodes.has(idKey(id))) ?? null;
+  }
+
+  /**
+   * Integrates one op plus any buffered ops it unblocks. Buffered ops are
+   * indexed by the id they wait for, so arrival order never makes this quadratic.
+   */
+  private integrate(op: Op): boolean {
     const key = idKey(op.opId);
-    if (this.applied.has(key)) return;
-    const before = this.listeners.size ? this.visible() : [];
-    this.pending.set(key, op);
-    let progress: boolean;
-    do {
-      progress = false;
-      for (const [pendingKey, candidate] of this.pending) {
-        const ready = candidate.type === 'insert'
-          ? candidate.parent === null || this.nodes.has(idKey(candidate.parent))
-          : candidate.targets.every(id => this.nodes.has(idKey(id)));
-        if (!ready) continue;
-        if (candidate.type === 'insert') this.insertChunk(candidate);
-        else {
-          for (const id of candidate.targets) this.nodes.get(idKey(id))!.deleted = true;
-          this.observe(candidate.opId);
-        }
-        this.applied.add(pendingKey);
-        this.pending.delete(pendingKey);
-        progress = true;
+    if (this.applied.has(key) || this.pending.has(key)) return false;
+    let changed = false;
+    const ready: Op[] = [op];
+    while (ready.length) {
+      const next = ready.pop()!;
+      const nextKey = idKey(next.opId);
+      if (this.applied.has(nextKey)) continue;
+      const missing = this.missingDependency(next);
+      if (missing) {
+        this.pending.set(nextKey, next);
+        const waitKey = idKey(missing);
+        const queue = this.waiting.get(waitKey);
+        if (queue) queue.push(next); else this.waiting.set(waitKey, [next]);
+        continue;
       }
-    } while (progress);
-    if (!this.listeners.size) return;
+      this.pending.delete(nextKey);
+      this.applied.add(nextKey);
+      changed = true;
+      if (next.type === 'insert') {
+        this.insertChunk(next);
+        for (let i = 0; i < next.text.length; i++) {
+          const woken = this.waiting.get(idKey({ replica: next.opId.replica, counter: next.opId.counter + i }));
+          if (woken) { this.waiting.delete(idKey({ replica: next.opId.replica, counter: next.opId.counter + i })); ready.push(...woken); }
+        }
+      } else {
+        for (const id of next.targets) this.nodes.get(idKey(id))!.deleted = true;
+        this.observe(next.opId);
+      }
+    }
+    return changed;
+  }
+
+  private notify(before: Node[]): void {
     const after = this.visible();
     const oldPositions = new Map(before.map((node, i) => [node, i]));
     const changes: TextChange[] = [];

@@ -17,6 +17,9 @@ console.log(b.text()); // ola
 
 `insert(index, text)` and `delete(index, length)` apply locally and return ops
 for transmission. `apply(op)` is idempotent and buffers missing dependencies.
+`applyMany(ops)` applies a batch (for example a catch-up page) and notifies
+`onChange` listeners once for the whole batch. Buffered ops are indexed by the
+id they are waiting for, so delivery order does not affect the cost.
 `version()` returns maximum counters, `pendingCount()` counts unresolved ops,
 and `inspect()` returns an independent tree snapshot. `onChange(callback)`
 subscribes to remote changes, in pre-change visible coordinates, and returns
@@ -50,3 +53,15 @@ operation; the document changes by at most 101 characters during measurement
 (including the runner's untimed probe). Initialization is excluded. These means
 meet the 16 ms goal; occasional GC pauses exceed it. The implementation uses a
 linear order array and is not intended to guarantee constant-time edits.
+
+Catch-up of a document typed one keystroke at a time (one op per character),
+measured on 2026-11-18 with an `onChange` listener attached, as in the editor:
+
+| Ops | Per-op `apply` (before) | `applyMany`, pages of 5,000 |
+| --- | ---: | ---: |
+| 5,000 | 4.2 s | — |
+| 10,000 | ≈ 15 s | 141 ms |
+| 20,000 | 58 s | — |
+
+Replaying 10,000 ops in reverse order takes 150 ms. `test/batch.test.ts` keeps
+both cases under 2 s.

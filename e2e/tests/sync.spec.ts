@@ -36,8 +36,8 @@ test('fresh tab recovers closed offline tab edits', async ({ browser, request, b
           const open = indexedDB.open(entry.name!);
           open.onerror = () => reject(open.error);
           open.onsuccess = () => {
-            const db = open.result, tx = db.transaction('docs'), all = tx.objectStore('docs').getAll();
-            tx.oncomplete = () => { db.close(); resolve(all.result.reduce((n, state) => n + (state.pending?.length ?? 0), 0)); };
+            const db = open.result, tx = db.transaction('ops'), all = tx.objectStore('ops').getAll();
+            tx.oncomplete = () => { db.close(); resolve(all.result.filter((entry: { pending: boolean }) => entry.pending).length); };
           };
         });
         if (pending >= 'recover me'.length) return true;

@@ -1,13 +1,29 @@
 import { idKey, type Op } from '@weft/crdt';
-import { cloneState, emptyState, type Store, type StoredState } from './Store';
 import { MemoryStore } from './MemoryStore';
+import type { Commit, Store, StoredState } from './Store';
+
+/**
+ * Schema v2: one record per op instead of one snapshot per document, so a
+ * keystroke writes one small record regardless of document size.
+ *   meta: doc -> { replicaId, lastSeq }
+ *   ops:  [doc, opKey] -> { op, pending }
+ */
+const VERSION = 2;
+type Meta = { replicaId: string | null; lastSeq: number };
+type Entry = { op: Op; pending: boolean };
 
 export class IdbStore implements Store {
   private readonly database: Promise<IDBDatabase>;
   constructor(name = 'weft-v1') {
     this.database = new Promise((resolve, reject) => {
-      const request = indexedDB.open(name, 1);
-      request.onupgradeneeded = () => { request.result.createObjectStore('docs'); };
+      const request = indexedDB.open(name, VERSION);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        // v1 stored whole-document snapshots. It never shipped, so local v1 data is dropped, not migrated.
+        if (db.objectStoreNames.contains('docs')) db.deleteObjectStore('docs');
+        if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta');
+        if (!db.objectStoreNames.contains('ops')) db.createObjectStore('ops');
+      };
       request.onsuccess = () => {
         const db = request.result; db.onversionchange = () => db.close(); resolve(db);
       };
@@ -16,55 +32,64 @@ export class IdbStore implements Store {
     });
   }
 
-  async load(doc: string): Promise<StoredState> {
+  /** Runs body in one transaction and resolves when it commits. */
+  private async run(mode: IDBTransactionMode, body: (meta: IDBObjectStore, ops: IDBObjectStore) => void): Promise<void> {
     const db = await this.database;
     return new Promise((resolve, reject) => {
-      const transaction = db.transaction('docs', 'readonly');
-      const request = transaction.objectStore('docs').get(doc);
-      transaction.oncomplete = () => resolve((request.result as StoredState | undefined) ?? emptyState());
-      transaction.onabort = () => reject(transaction.error);
-      transaction.onerror = () => reject(transaction.error);
-    });
-  }
-
-  private async update(doc: string, fn: (state: StoredState) => StoredState): Promise<void> {
-    const db = await this.database;
-    return new Promise((resolve, reject) => {
-      const transaction = db.transaction('docs', 'readwrite');
-      const store = transaction.objectStore('docs'); const request = store.get(doc);
-      request.onsuccess = () => {
-        try { store.put(fn((request.result as StoredState | undefined) ?? emptyState()), doc); }
-        catch (error) { transaction.abort(); reject(error); }
-      };
+      const transaction = db.transaction(['meta', 'ops'], mode);
       transaction.oncomplete = () => resolve();
       transaction.onabort = () => reject(transaction.error);
       transaction.onerror = () => reject(transaction.error);
+      try { body(transaction.objectStore('meta'), transaction.objectStore('ops')); }
+      catch (error) { transaction.abort(); reject(error); }
     });
   }
 
-  saveState(doc: string, state: StoredState): Promise<void> {
-    const snapshot = cloneState(state);
-    return this.update(doc, previous => {
-      const ops = new Map([...previous.ops, ...snapshot.ops].map(op => [idKey(op.opId), op]));
-      const acknowledged = new Set<string>();
-      for (const version of [previous, snapshot]) {
-        const pending = new Set(version.pending.map(op => idKey(op.opId)));
-        for (const op of version.ops) if (!pending.has(idKey(op.opId))) acknowledged.add(idKey(op.opId));
+  private updateMeta(meta: IDBObjectStore, doc: string, fn: (m: Meta) => Meta): void {
+    const request = meta.get(doc);
+    request.onsuccess = () => meta.put(fn((request.result as Meta | undefined) ?? { replicaId: null, lastSeq: 0 }), doc);
+  }
+
+  async load(doc: string): Promise<StoredState> {
+    let meta: Meta | undefined; let entries: Entry[] = [];
+    await this.run('readonly', (metaStore, opsStore) => {
+      const m = metaStore.get(doc); m.onsuccess = () => { meta = m.result as Meta | undefined; };
+      const all = opsStore.getAll(IDBKeyRange.bound([doc], [doc, []]));
+      all.onsuccess = () => { entries = all.result as Entry[]; };
+    });
+    return {
+      replicaId: meta?.replicaId ?? null, lastSeq: meta?.lastSeq ?? 0,
+      ops: entries.map(e => e.op), pending: entries.filter(e => e.pending).map(e => e.op),
+    };
+  }
+
+  saveReplicaId(doc: string, id: string): Promise<void> {
+    return this.run('readwrite', meta => this.updateMeta(meta, doc, m => ({ ...m, replicaId: id })));
+  }
+
+  commit(doc: string, change: Commit): Promise<void> {
+    return this.run('readwrite', (meta, ops) => {
+      for (const op of change.local ?? []) {
+        const key = [doc, idKey(op.opId)];
+        const existing = ops.get(key);
+        // Never overwrite: another tab may already have this op acknowledged.
+        existing.onsuccess = () => { if (!existing.result) ops.put({ op, pending: true } satisfies Entry, key); };
       }
-      // Merge inside the read/write transaction: stale tabs cannot overwrite
-      // another writer's log or resurrect operations already acknowledged.
-      // The merged log is a superset of every writer's log, so the highest
-      // watermark is still backed by stored ops.
-      return { ...snapshot, ops: [...ops.values()], pending: [...ops.values()].filter(op => !acknowledged.has(idKey(op.opId))),
-        lastSeq: Math.max(previous.lastSeq, snapshot.lastSeq) };
+      for (const op of change.remote ?? []) ops.put({ op, pending: false } satisfies Entry, [doc, idKey(op.opId)]);
+      for (const id of change.acked ?? []) {
+        const key = [doc, idKey(id)];
+        const existing = ops.get(key);
+        existing.onsuccess = () => {
+          const entry = existing.result as Entry | undefined;
+          if (entry?.pending) ops.put({ ...entry, pending: false } satisfies Entry, key);
+        };
+      }
+      if (change.lastSeq !== undefined) {
+        const lastSeq = change.lastSeq;
+        this.updateMeta(meta, doc, m => ({ ...m, lastSeq: Math.max(m.lastSeq, lastSeq) }));
+      }
     });
   }
-  saveReplicaId(doc: string, id: string): Promise<void> { return this.update(doc, s => ({ ...s, replicaId: id })); }
-  appendOps(doc: string, ops: Op[]): Promise<void> {
-    return this.update(doc, s => ({ ...s, ops: [...new Map([...s.ops, ...ops].map(op => [idKey(op.opId), op])).values()] }));
-  }
-  setPending(doc: string, pending: Op[]): Promise<void> { return this.update(doc, s => ({ ...s, pending })); }
-  setLastSeq(doc: string, lastSeq: number): Promise<void> { return this.update(doc, s => ({ ...s, lastSeq })); }
 }
 
 export async function openStore(name = 'weft-v1'): Promise<{ store: Store; persistent: boolean }> {

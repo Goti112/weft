@@ -1,5 +1,5 @@
 import { FugueDoc, idKey, type Op } from '@weft/crdt';
-import type { Store, StoredState } from '../storage/Store';
+import type { Commit, Store, StoredState } from '../storage/Store';
 import { SyncClient, type SocketFactory, type SyncStatus } from '../sync/SyncClient';
 import type { ClientMsg, ServerMsg } from '../sync/protocol';
 
@@ -16,7 +16,6 @@ export class Replica {
   readonly name: string;
   status: SyncStatus = 'offline';
   error: Error | null = null;
-  private readonly ops = new Map<string, Op>();
   private readonly pending = new Map<string, Op>();
   private readonly listeners = new Map<keyof ReplicaEvents, Set<(payload: never) => void>>();
   private readonly client: SyncClient;
@@ -25,16 +24,19 @@ export class Replica {
   private constructor(private readonly opts: Options, state: StoredState) {
     this.replicaId = state.replicaId!; this.name = opts.name ?? this.replicaId;
     this.doc = new FugueDoc(this.replicaId);
-    for (const op of state.ops) { this.doc.apply(op); this.ops.set(idKey(op.opId), op); }
+    this.doc.applyMany(state.ops);
     for (const op of state.pending) this.pending.set(idKey(op.opId), op);
     this.client = new SyncClient({ ...opts, replica: this.replicaId, lastSeq: state.lastSeq, pending: state.pending,
       onRemote: incoming => {
-        for (const { op } of incoming) { this.doc.apply(op); this.ops.set(idKey(op.opId), op); }
-        this.persist(); this.emit('change', undefined);
+        const ops = incoming.map(({ op }) => op);
+        this.doc.applyMany(ops);
+        // The ops and the watermark they advance are written together.
+        void this.commit({ remote: ops, lastSeq: this.client.lastSeq });
+        this.emit('change', undefined);
       },
       onAck: ids => {
         for (const id of ids) this.pending.delete(idKey(id));
-        this.persist(); this.emit('pending', this.pendingCount);
+        void this.commit({ acked: ids }); this.emit('pending', this.pendingCount);
       },
       onStatus: status => { this.status = status; this.emit('status', status); },
       onMessage: (dir, msg) => this.emit('message', { dir, msg }),
@@ -58,16 +60,15 @@ export class Replica {
 
   private local(ops: Op[]): void {
     if (this.destroyed) throw new Error('Replica is destroyed');
-    for (const op of ops) { this.ops.set(idKey(op.opId), op); this.pending.set(idKey(op.opId), op); }
-    const saved = this.persist();
+    for (const op of ops) this.pending.set(idKey(op.opId), op);
+    // Saved locally before it is sent, so a reload can never lose an edit the server has not acked.
+    const saved = this.commit({ local: ops });
     this.emit('change', undefined); this.emit('pending', this.pendingCount);
     void saved.then(ok => { if (ok && !this.destroyed) this.client.submit(ops.filter(op => this.pending.has(idKey(op.opId)))); });
   }
 
-  private persist(): Promise<boolean> {
-    return this.opts.store.saveState(this.opts.doc, {
-      replicaId: this.replicaId, ops: [...this.ops.values()], pending: [...this.pending.values()], lastSeq: this.client.lastSeq,
-    }).then(() => true, error => {
+  private commit(change: Commit): Promise<boolean> {
+    return this.opts.store.commit(this.opts.doc, change).then(() => true, error => {
       this.error = error instanceof Error ? error : new Error(String(error));
       this.client.setPaused(true); this.emit('error', this.error); return false;
     });
