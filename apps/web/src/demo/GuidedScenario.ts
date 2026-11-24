@@ -21,6 +21,8 @@ async function until(predicate: () => boolean, signal?: AbortSignal): Promise<vo
 export async function runGuidedScenario(panels: { ana: Replica; bea: Replica; carles: Replica }, opts: { stepDelayMs?: number; signal?: AbortSignal } = {}): Promise<void> {
   const { ana, bea, carles } = panels;
   const same = () => ana.doc.text() === bea.doc.text() && ana.doc.text() === carles.doc.text();
+  // The scenario sets its own stage: panels cut by hand beforehand are reconnected first.
+  for (const replica of [ana, bea, carles]) replica.setPaused(false);
   await until(() => same() && ana.doc.text().includes('[') && [ana, bea, carles].every(r => r.status === 'connected'), opts.signal);
   const position = ana.doc.text().indexOf('[') + 1;
   ana.setPaused(true); bea.setPaused(true);
