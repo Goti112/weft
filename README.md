@@ -4,6 +4,10 @@ Editor de texto colaborativo *local-first*. Varias personas editan el mismo docu
 
 [![CI](https://github.com/Goti112/weft/actions/workflows/ci.yml/badge.svg)](https://github.com/Goti112/weft/actions/workflows/ci.yml)
 
+### [▶ Probar la demo](https://goti112.github.io/weft/)
+
+Pulsa **"▶ Escenario guiado"**: Ana y Bea se quedan sin red, escriben a la vez en el mismo sitio y, al volver, los tres editores convergen. También puedes cortar la red a mano, añadir latencia o duplicar y desordenar mensajes, y abrir el inspector. La demo es estática: el servidor de sincronización se ejecuta en tu navegador ([`LocalServer`](apps/web/src/sync/LocalServer.ts)), con el mismo protocolo que el servidor Java. Para la app completa, con documentos compartidos entre dispositivos, usa `docker compose up` (ver [Ejecutarlo](#ejecutarlo)).
+
 - **Un CRDT de texto escrito desde cero:** [Fugue](https://arxiv.org/abs/2305.00583) en TypeScript sin dependencias, verificado con tests de propiedades.
 - **Un servidor de sincronización en Java 21 + Spring Boot:** WebSocket, PostgreSQL, puesta al día incremental y reintentos idempotentes.
 - **Una demo que enseña las tripas:**
