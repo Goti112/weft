@@ -1,9 +1,17 @@
 import type { LogEvent } from '../eventLog';
 
+const columns = ['Ana', 'Servidor', 'Bea', 'Carles'];
+
 export function Timeline({ events }: { events: LogEvent[] }) {
-  const columns = ['Ana', 'Servidor', 'Bea', 'Carles'];
-  return <div className="timeline"><table aria-label="Mensajes"><thead><tr><th>Hora</th>{columns.map(name => <th key={name}>{name}</th>)}</tr></thead><tbody>{events.slice().reverse().map((event, index) => <tr key={`${event.at}-${index}`}><td className="log-time">{new Date(event.at).toLocaleTimeString('es-ES', { hour12: false })}</td>{columns.map(name => {
-    const direction = event.replica === 'Ana' ? event.dir === 'out' ? '→' : '←' : event.dir === 'out' ? '←' : '→';
-    return <td key={name} className={name === 'Servidor' ? 'server-column' : ''}>{name === event.replica && <span className={`message-arrow ${event.dir}`} aria-label={`${event.dir === 'out' ? 'De' : 'Hacia'} ${event.replica}`}>{direction} <small>{event.t}</small></span>}{name === 'Servidor' && <span className="message-chip" title={event.summary}>{event.summary}</span>}</td>;
-  })}</tr>)}</tbody></table>{events.length === 0 && <p className="inspector-empty">Los mensajes aparecerán aquí en cuanto escribas.</p>}</div>;
+  if (events.length === 0) return <p className="inspector-note">Todavía no hay mensajes. Aparecerán en cuanto escribas en un editor.</p>;
+  return <div className="timeline"><table aria-label="Mensajes">
+    <thead><tr><th>Hora</th>{columns.map(name => <th key={name}>{name}</th>)}</tr></thead>
+    <tbody>{events.slice().reverse().map((event, index) => <tr key={`${event.at}-${index}`}>
+      <td className="log-time">{new Date(event.at).toLocaleTimeString('es-ES', { hour12: false })}</td>
+      {columns.map(name => <td key={name}>
+        {name === event.replica && <span className={`message-arrow ${event.dir}`}>{event.dir === 'out' ? 'envía' : 'recibe'} {event.t}</span>}
+        {name === 'Servidor' && <span className="message-chip">{event.summary}</span>}
+      </td>)}
+    </tr>)}</tbody>
+  </table></div>;
 }

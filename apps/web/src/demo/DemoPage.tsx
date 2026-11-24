@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { SiteFooter, SiteHeader } from '../components/Site';
 import { Replica } from '../replica/Replica';
 import { demoBackend, REPO_URL, STANDALONE } from '../standalone';
 import { MemoryStore } from '../storage/MemoryStore';
@@ -44,24 +45,30 @@ export function DemoPage() {
     finally { if (!controller.current.signal.aborted) setRunning(false); }
   }
 
-  return <main className="document-page demo-page">
-    <header className="topbar"><Link className="wordmark" to="/">weft<span>↗</span></Link><span>EL TEXTO NOS UNE. CON O SIN RED.</span>{STANDALONE
-      ? <a className="nav-link" href={REPO_URL}>Ver el código ↗</a>
-      : <Link className="nav-link" to="/d/new">Crear un documento ↗</Link>}</header>
-    {STANDALONE && <p className="standalone-note" role="note">Versión estática: el servidor de sincronización se ejecuta en tu navegador y habla el mismo protocolo que el <a href={`${REPO_URL}/tree/main/server`}>servidor Java</a> del repositorio. Las réplicas, el CRDT y la red simulada son los de verdad.</p>}
-    <section className="hero"><div><p className="eyebrow"><span className="live-dot" /> LOCAL-FIRST. DE VERDAD.</p><h1>Desconéctate. Escribe.<br />Vuelve.<br /><span>Nunca pierdes nada.</span></h1><p className="hero-copy">Tres editores independientes, cada uno con su propia réplica. Corta la red, escribe en varios a la vez y mira cómo se fusiona todo, operación a operación.</p></div><aside className="how-to"><span className="eyebrow">PRUÉBALO EN 30 SEGUNDOS</span>{[['01', 'Corta la conexión', 'Ana y Bea se quedan sin red.'], ['02', 'Sigue escribiendo', 'Cada una tiene algo que añadir.'], ['03', 'Vuelve a conectar', 'Todos los cambios encuentran su lugar.']].map(([n, title, copy]) => <div className="how-step" key={n}><span>{n}</span><div><strong>{title}</strong><p>{copy}</p></div></div>)}<div className="woven" aria-hidden="true">╱╱╱╱╱╱<br />╲╲╲╲╲╲<br />╱╱╱╱╱╱</div></aside></section>
-    <section className={`live-demo ${converged ? 'converged' : ''}`} aria-label="Demo colaborativa">
-      <div className="demo-heading"><div><p className="eyebrow">EL MISMO DOCUMENTO. TRES RÉPLICAS.</p><h2>Haz que la red falle.</h2></div><button className="primary-button" disabled={replicas.length !== 3 || running} onClick={() => void guide()}>{running ? 'Sincronizando el escenario…' : '▶ Escenario guiado'}</button></div>
-      {error && <p role="alert" className="warning">{error}</p>}
-      {replicas.length === 0 && !error && <p className="loading" role="status">Preparando tres editores independientes…</p>}
-      <div className="panels">{replicas.map((replica, index) => <Panel key={replica.replicaId} replica={replica} index={index} />)}</div>
-      <div className="demo-caption" role="status"><span>{converged ? '✓ Los tres documentos coinciden. Ningún cambio se ha perdido.' : 'Escribe en cualquier panel. Cada uno conserva sus propios cambios.'}</span><span>{STANDALONE ? 'Protocolo de Weft · Fugue' : 'WebSocket · PostgreSQL · Fugue'}</span></div>
+  return <main className="page">
+    <SiteHeader />
+    <section className="intro">
+      <h1>Un editor de texto colaborativo que funciona sin conexión</h1>
+      <p>Abajo tienes tres editores del mismo documento: Ana, Bea y Carles. Cada uno guarda su propia copia y se sincroniza con un servidor. Si desconectas uno y escribes en él, sus cambios se quedan pendientes. Al reconectarlo, se fusionan con los de los demás: nadie pierde nada y las palabras escritas a la vez en el mismo sitio no se mezclan.</p>
+      <p>Para verlo de una vez, pulsa <strong>Escenario guiado</strong>. Ana y Bea se desconectan, escriben a la vez en la misma posición y vuelven a conectarse.</p>
+      {STANDALONE
+        ? <p>En esta versión, el servidor de sincronización se ejecuta dentro de la propia página y sigue el mismo protocolo que el <a href={`${REPO_URL}/tree/main/server`}>servidor Java</a> del repositorio. Los editores, el CRDT y la red simulada son los mismos que en la aplicación completa.</p>
+        : <p>También puedes <Link to="/d/new">crear un documento</Link> y abrirlo en otro navegador o dispositivo.</p>}
+    </section>
+
+    <section className={`section ${converged ? 'converged' : ''}`} aria-labelledby="demo-title">
+      <h2 id="demo-title">Tres copias del mismo documento</h2>
+      <div className="demo-toolbar">
+        <button className="button" disabled={replicas.length !== 3 || running} onClick={() => void guide()}>{running ? 'Ejecutando el escenario…' : 'Escenario guiado'}</button>
+        <span className={`demo-result ${converged ? 'converged' : ''}`} role="status">{converged ? 'Los tres documentos coinciden.' : 'Puedes escribir en cualquiera de los tres.'}</span>
+      </div>
+      {error && <p role="alert" className="notice">{error}</p>}
+      {replicas.length === 0 && !error && <p role="status">Preparando los editores…</p>}
+      <div className="panels">{replicas.map(replica => <Panel key={replica.replicaId} replica={replica} />)}</div>
       <NetworkControls network={network} />
     </section>
+
     {replicas.length === 3 && <Inspector replicas={replicas} log={log} />}
-    {STANDALONE
-      ? <div className="share-prompt"><span>¿Quieres ver cómo está hecho?</span><a href={REPO_URL}>Código, tests y decisiones de diseño en GitHub →</a></div>
-      : <div className="share-prompt"><span>¿Y si lo pruebas con alguien de verdad?</span><Link to="/d/new">Abrir un documento compartible →</Link></div>}
-    <footer><span>weft / Cada cambio cuenta.</span><span>Un CRDT propio. Cero conflictos. Sin registro.</span></footer>
+    <SiteFooter />
   </main>;
 }

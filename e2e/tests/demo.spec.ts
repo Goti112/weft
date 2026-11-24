@@ -2,9 +2,9 @@ import { expect, test } from '@playwright/test';
 
 test('guided scenario converges', async ({ page }) => {
   await page.goto('/');
-  const button = page.getByRole('button', { name: '▶ Escenario guiado', exact: true });
+  const button = page.getByRole('button', { name: 'Escenario guiado', exact: true });
   await expect(button).toBeEnabled(); await button.click();
-  await expect(page.getByText('✓ Los tres documentos coinciden. Ningún cambio se ha perdido.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Los tres documentos coinciden.', { exact: true })).toBeVisible();
   const editors = page.getByRole('textbox');
   await expect(editors).toHaveCount(3);
   const texts = await editors.allInnerTexts(); expect(new Set(texts).size).toBe(1);
@@ -15,7 +15,7 @@ test('reconnecting a panel resumes catch-up from its watermark', async ({ page }
   await page.goto('/');
   const ana = page.getByTestId('panel-ana');
   await expect(ana.getByText('Conectado', { exact: true })).toBeVisible();
-  await ana.getByRole('button', { name: '✂ Cortar red', exact: true }).click();
+  await ana.getByRole('button', { name: 'Desconectar', exact: true }).click();
   await ana.getByRole('button', { name: 'Reconectar', exact: true }).click();
   await expect(ana.getByText('Conectado', { exact: true })).toBeVisible();
   // The seed text gives every panel a non-zero watermark before the cut.

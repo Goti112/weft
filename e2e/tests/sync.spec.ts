@@ -45,7 +45,7 @@ test('fresh tab recovers closed offline tab edits', async ({ browser, request, b
   try {
     const old = await context.newPage(); await old.goto(`/d/${id}`);
     await expect(old.getByText('Conectado', { exact: true })).toBeVisible();
-    await expect(old.getByText('✓ Listo para trabajar sin conexión', { exact: true })).toBeVisible();
+    await expect(old.getByText('Listo para trabajar sin conexión', { exact: true })).toBeVisible();
     await context.setOffline(true); await old.getByRole('textbox').pressSequentially('recover me');
     await expect.poll(() => savedPending(old)).toBeGreaterThanOrEqual('recover me'.length);
     await old.close();
@@ -83,7 +83,7 @@ test('offline reload keeps edits', async ({ browser, request, baseURL }) => {
   try {
     const pa = await a.newPage(); await pa.goto(`/d/${id}`);
     await expect(pa.getByText('Conectado', { exact: true })).toBeVisible();
-    await expect(pa.getByText('✓ Listo para trabajar sin conexión', { exact: true })).toBeVisible();
+    await expect(pa.getByText('Listo para trabajar sin conexión', { exact: true })).toBeVisible();
     await a.setOffline(true); await pa.getByRole('textbox').pressSequentially('sin red ');
     // Writes to IndexedDB are asynchronous: reload once the keystrokes are durable,
     // as a person would, rather than racing the last write.

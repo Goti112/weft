@@ -6,5 +6,5 @@ function NodeView({ node }: { node: TreeSnapshot }) {
 }
 
 export function TreeView({ tree }: { tree: TreeSnapshot }) {
-  return <div className="fugue-tree"><p className="view-explanation">Cada carácter tiene su lugar. Borrar lo convierte en una lápida; su identidad permanece. Pasa el cursor para ver cada id.</p><ul><NodeView node={tree} /></ul></div>;
+  return <div className="fugue-tree"><p className="inspector-note">Cada carácter es un nodo del árbol; el texto es su recorrido en orden (L = hijo izquierdo, R = derecho). Un carácter borrado queda como lápida, tachado, para que siga sirviendo de referencia a otras inserciones. Pasa el ratón por encima de un nodo para ver su id.</p><ul><NodeView node={tree} /></ul></div>;
 }
